@@ -51,12 +51,6 @@ impl MlDsa65Identity {
         #[allow(deprecated)]
         Ok(ExpandedSigningKey::<MlDsa65>::from_expanded(&arr))
     }
-
-    fn load_vk(&self) -> Result<VerifyingKey<MlDsa65>, IdentityError> {
-        let arr = EncodedVerifyingKey::<MlDsa65>::try_from(self.public_key.as_slice())
-            .map_err(|_| IdentityError::InvalidKeyMaterial("bad VK length".into()))?;
-        Ok(VerifyingKey::<MlDsa65>::decode(&arr))
-    }
 }
 
 impl VaultIdentity for MlDsa65Identity {
@@ -128,7 +122,10 @@ impl VaultIdentity for MlDsa65Identity {
         let sig = Signature::<MlDsa65>::decode(&sig_arr)
             .ok_or_else(|| IdentityError::InvalidKeyMaterial("invalid signature bytes".into()))?;
 
-        Ok(vk.verify_internal(message, &sig))
+        // `Signer` applies the FIPS 204 external-message domain separator with
+        // an empty context. Verification must use the matching `Verifier`
+        // entry point; `verify_internal` intentionally omits that separator.
+        Ok(ml_dsa::Verifier::verify(&vk, message, &sig).is_ok())
     }
 
     fn to_bytes(&self) -> Vec<u8> {

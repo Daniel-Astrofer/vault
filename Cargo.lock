@@ -3835,7 +3835,6 @@ dependencies = [
  "axum",
  "clap",
  "hex",
- "hyper-util",
  "libc",
  "rand 0.8.7",
  "reqwest 0.12.28",
