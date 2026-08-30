@@ -12,8 +12,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-VAULT_ROOT="$REPO_ROOT/backend/kerosene-vault"
+VAULT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # shellcheck source=mtls_cert_lib.sh
 source "$SCRIPT_DIR/mtls_cert_lib.sh"
 
