@@ -3,7 +3,7 @@
 //! Manages the lifecycle of individual FROST signing sessions, tracking
 //! commitments, signature shares, and session state.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use frost_secp256k1 as frost;
 use frost_secp256k1::Identifier;
@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::signer::SignerError;
 
 /// Unique session identifier.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct SessionId(pub String);
 
 impl SessionId {
@@ -67,7 +67,7 @@ pub struct SigningSession {
 
 impl SigningSession {
     /// Create a new signing session.
-    pub fn new(message: Vec<u8>, expected_participants: Vec<Identifier>, min_signers: usize) -> Self {
+    fn new(message: Vec<u8>, expected_participants: Vec<Identifier>, min_signers: usize) -> Self {
         use std::time::{SystemTime, UNIX_EPOCH};
         let ts = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
 
@@ -92,6 +92,9 @@ impl SigningSession {
         if self.state != SessionState::AwaitingCommitments {
             return Err(SignerError::SessionAlreadyCompleted);
         }
+        if !self.expected_participants.contains(&identifier) {
+            return Err(SignerError::UnexpectedParticipant);
+        }
         if self.commitments.contains_key(&identifier) {
             return Err(SignerError::DuplicateCommitment);
         }
@@ -114,8 +117,14 @@ impl SigningSession {
         if self.state == SessionState::Complete {
             return Err(SignerError::SessionAlreadyCompleted);
         }
-        if self.state == SessionState::AwaitingCommitments {
-            return Err(SignerError::RoundError("still awaiting commitments".into()));
+        if self.state != SessionState::AwaitingSignatureShares {
+            return Err(SignerError::RoundError("session is not accepting signature shares".into()));
+        }
+        if !self.expected_participants.contains(&identifier) || !self.commitments.contains_key(&identifier) {
+            return Err(SignerError::UnexpectedParticipant);
+        }
+        if self.signature_shares.contains_key(&identifier) {
+            return Err(SignerError::DuplicateSignatureShare);
         }
         self.signature_shares.insert(identifier, share);
 
@@ -151,6 +160,19 @@ impl SigningSessionManager {
         if self.sessions.len() >= self.max_sessions {
             return Err(SignerError::Internal("max concurrent sessions reached".into()));
         }
+        if message.is_empty() {
+            return Err(SignerError::InvalidSessionConfiguration("message cannot be empty".into()));
+        }
+        let unique_participants: BTreeSet<_> = expected_participants.iter().copied().collect();
+        if unique_participants.len() != expected_participants.len() {
+            return Err(SignerError::InvalidSessionConfiguration("participant identifiers must be unique".into()));
+        }
+        if min_signers == 0 || min_signers > expected_participants.len() {
+            return Err(SignerError::InvalidSessionConfiguration(format!(
+                "threshold {min_signers} is invalid for {} participants",
+                expected_participants.len()
+            )));
+        }
 
         let session = SigningSession::new(message, expected_participants, min_signers);
         let id = session.id.clone();
@@ -180,8 +202,8 @@ impl SigningSessionManager {
 
     /// Clean up expired sessions (older than the given duration in seconds).
     pub fn cleanup_expired(&mut self, max_age_secs: u64) {
-        use std::time::{SystemTime, UNIXEPOCH};
-        let now = SystemTime::now().duration_since(UNIXEPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
 
         self.sessions.retain(|_, session| {
             let age_ns = now.saturating_sub(session.created_at);
@@ -198,12 +220,15 @@ mod tests {
     fn create_and_manage_session() {
         let mut manager = SigningSessionManager::new(10);
 
-        let id1 = manager.create_session(b"message-1".to_vec(), vec![], 2).unwrap();
+        let p1 = Identifier::try_from(1u16).unwrap();
+        let p2 = Identifier::try_from(2u16).unwrap();
+        let p3 = Identifier::try_from(3u16).unwrap();
+        let id1 = manager.create_session(b"message-1".to_vec(), vec![p1, p2], 2).unwrap();
 
         let session = manager.get_session(&id1).unwrap();
         assert_eq!(session.state, SessionState::AwaitingCommitments);
 
-        let id2 = manager.create_session(b"message-2".to_vec(), vec![], 3).unwrap();
+        let id2 = manager.create_session(b"message-2".to_vec(), vec![p1, p2, p3], 3).unwrap();
         assert_ne!(id1, id2);
         assert_eq!(manager.active_count(), 2);
     }
@@ -222,14 +247,12 @@ mod tests {
         {
             let session = manager.get_session_mut(&session_id).unwrap();
             let mut rng = rand::rngs::OsRng;
-            let (_, commitments1) = frost::round1::commit(
-                &frost::keys::SecretShare::new(id1, frost::Scalar::random(&mut rng)).unwrap(),
-                &mut rng,
-            );
-            let (_, commitments2) = frost::round1::commit(
-                &frost::keys::SecretShare::new(id2, frost::Scalar::random(&mut rng)).unwrap(),
-                &mut rng,
-            );
+            let (secret_shares, _) =
+                frost::keys::generate_with_dealer(2, 2, frost::keys::IdentifierList::Default, &mut rng).unwrap();
+            let key_package1 = frost::keys::KeyPackage::try_from(secret_shares[&id1].clone()).unwrap();
+            let key_package2 = frost::keys::KeyPackage::try_from(secret_shares[&id2].clone()).unwrap();
+            let (_, commitments1) = frost::round1::commit(key_package1.signing_share(), &mut rng);
+            let (_, commitments2) = frost::round1::commit(key_package2.signing_share(), &mut rng);
 
             session.add_commitments(id1, commitments1).unwrap();
             session.add_commitments(id2, commitments2).unwrap();
@@ -240,5 +263,20 @@ mod tests {
         let removed = manager.remove_session(&session_id);
         assert!(removed.is_some());
         assert!(manager.get_session(&session_id).is_err());
+    }
+
+    #[test]
+    fn invalid_participant_sets_fail_closed() {
+        let mut manager = SigningSessionManager::new(10);
+        let id1 = Identifier::try_from(1u16).unwrap();
+
+        assert!(matches!(
+            manager.create_session(b"message".to_vec(), vec![id1, id1], 2),
+            Err(SignerError::InvalidSessionConfiguration(_))
+        ));
+        assert!(matches!(
+            manager.create_session(b"message".to_vec(), vec![id1], 2),
+            Err(SignerError::InvalidSessionConfiguration(_))
+        ));
     }
 }

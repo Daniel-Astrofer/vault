@@ -6,9 +6,10 @@
 //!
 //! # Security
 //! - No TCP listener or network I/O
-//! - Share material encrypted at rest
-//! - Key material zeroized after use
-//! - All messages authenticated with session IDs
+//! - The Unix socket is created with owner-only permissions
+//! - Existing regular files and symlinks are never replaced by the socket
+//! - Session IDs are correlation values, not authentication credentials
+//! - The public group package is the only material persisted by this daemon
 //! - Real FROST signature aggregation (no placeholder responses)
 
 use std::collections::BTreeMap;
@@ -17,7 +18,7 @@ use std::sync::Mutex;
 
 use frost_secp256k1::round1::SigningCommitments;
 use frost_secp256k1::round2::SignatureShare;
-use frost_secp256k1::{self as frost, Identifier};
+use frost_secp256k1::Identifier;
 use vault_signer::ipc::{SignerIpc, SignerRequest, SignerResponse};
 use vault_signer::session::SigningSessionManager;
 use vault_signer::signer::{FrostSigner, SignerError};
@@ -130,12 +131,12 @@ fn handle_request(
             let identifiers: Result<Vec<_>, _> = participants
                 .iter()
                 .map(|b| {
-                    if b.len() >= 2 {
-                        let arr: [u8; 2] = [b[0], b[1]];
-                        Ok(Identifier::try_from(u16::from_be_bytes(arr)))
-                    } else {
-                        Identifier::try_from(b[0] as u16)
-                    }
+                    let raw = match b.as_slice() {
+                        [value] => u16::from(*value),
+                        [high, low] => u16::from_be_bytes([*high, *low]),
+                        _ => return Err("identifier must contain one or two bytes".to_string()),
+                    };
+                    Identifier::try_from(raw).map_err(|e| e.to_string())
                 })
                 .collect();
 

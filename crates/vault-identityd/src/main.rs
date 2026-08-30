@@ -14,6 +14,7 @@
 
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
+use vault_identity_core::VaultIdentity;
 
 use vault_identityd::{IdentityDaemon, IdentityServer};
 
@@ -94,7 +95,7 @@ async fn main() {
             }
         }
         Command::GenerateIdentity { node_id, store_path } => {
-            let daemon =
+            let mut daemon =
                 IdentityDaemon::new(&node_id, &store_path).await.expect("failed to initialize identity daemon");
             match daemon.load_or_generate_identity().await {
                 Ok(id) => {
@@ -109,7 +110,7 @@ async fn main() {
             }
         }
         Command::RotateIdentity { node_id, store_path } => {
-            let daemon =
+            let mut daemon =
                 IdentityDaemon::new(&node_id, &store_path).await.expect("failed to initialize identity daemon");
             match daemon.rotate_identity().await {
                 Ok(id) => {

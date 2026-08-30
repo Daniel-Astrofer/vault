@@ -16,7 +16,7 @@ fn gen_lab_certs(dir: &Path) {
     std::fs::create_dir_all(dir).expect("tmpdir");
     let status = Command::new("bash")
         .env("VAULT_LAB_MTLS_OUT", dir)
-        .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../scripts/vault/gen_lab_mtls_certs.sh"))
+        .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/gen_lab_mtls_certs.sh"))
         .status()
         .expect("run gen_lab_mtls_certs.sh");
     assert!(status.success(), "cert generation failed: {status}");
@@ -73,8 +73,8 @@ fn lab_mtls_cfg(listen: &str, certs: &Path, data_dir: &Path) -> VaultConfig {
         data_dir: Some(data_dir.display().to_string()),
         anti_nonce_shared_dir: None,
         measurement_pin_hex: None,
-        dealer_requested: true,
-        dkg_mode: DkgMode::DealerLab,
+        dealer_requested: false,
+        dkg_mode: DkgMode::DistributedWire,
         reshare_policy: kerosene_vault::domain::ResharePolicy::Manual,
         governance_reward_sats: 0,
         governance_reward_bps: 0,
@@ -198,7 +198,7 @@ fn rotate_lab_mtls_refreshes_spiffe_tree_and_java_materials() {
     let status = Command::new("bash")
         .env("VAULT_LAB_MTLS_OUT", &certs)
         .env("VAULT_LAB_MTLS_TTL_HOURS", "24")
-        .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../scripts/vault/rotate_lab_mtls_certs.sh"))
+        .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/rotate_lab_mtls_certs.sh"))
         .status()
         .expect("run rotate_lab_mtls_certs.sh");
     assert!(status.success(), "rotation failed: {status}");

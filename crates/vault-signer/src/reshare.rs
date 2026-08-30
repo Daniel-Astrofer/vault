@@ -1,9 +1,10 @@
-//! Key reshare for FROST signing.
+//! Key refresh boundary for FROST signing.
 //!
-//! Implements the FROST key reshare protocol, allowing the signing group
-//! to change its membership or threshold without changing the group public key.
+//! frost-secp256k1 v3 provides a share-refresh protocol for an unchanged
+//! participant set. Membership-changing reshare requires a separate, complete
+//! wire protocol and intentionally fails closed in this crate.
 
-use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 
 use frost_secp256k1 as frost;
 use frost_secp256k1::Identifier;
@@ -33,13 +34,23 @@ pub struct ReshareConfig {
 
 /// Key reshare state machine.
 ///
-/// Allows a FROST signing group to change its composition (add/remove members)
-/// or threshold without changing the group's public key.
+/// Refreshes shares for an unchanged FROST signing group.
+///
+/// Membership and threshold changes are rejected until the complete
+/// authenticated reshare wire protocol is available.
 pub struct KeyReshare {
     /// Our current key package.
     current_key_package: frost::keys::KeyPackage,
     /// Reshare configuration.
     config: ReshareConfig,
+}
+
+/// First-round output for a same-membership distributed share refresh.
+pub struct ReshareRound1Output {
+    /// Secret state retained locally and consumed by round 2.
+    pub secret_package: frost::keys::dkg::round1::SecretPackage,
+    /// Public package broadcast over an authenticated consistent channel.
+    pub package: frost::keys::dkg::round1::Package,
 }
 
 impl KeyReshare {
@@ -48,18 +59,49 @@ impl KeyReshare {
         Ok(Self { current_key_package, config })
     }
 
-    /// Execute the reshare round 1 (generate new shares for new participants).
+    /// Execute round 1 of a same-membership distributed share refresh.
     ///
-    /// Returns a package to send to each new participant.
-    pub fn round1(&self) -> Result<BTreeMap<Identifier, frost::keys::dkg::round1::SecretPackage>, SignerError> {
+    /// Membership or threshold changes are not approximated with a fresh DKG:
+    /// doing so would silently change the group key. They fail closed until the
+    /// authenticated wire reshare protocol is implemented.
+    pub fn round1(&self) -> Result<ReshareRound1Output, SignerError> {
+        let current: BTreeSet<_> = self.config.current_participants.iter().copied().collect();
+        let new: BTreeSet<_> = self.config.new_participants.iter().copied().collect();
+        if current.len() != self.config.current_participants.len() || new.len() != self.config.new_participants.len() {
+            return Err(SignerError::InvalidSessionConfiguration(
+                "refresh participant identifiers must be unique".into(),
+            ));
+        }
+        if current != new {
+            return Err(SignerError::UnsupportedOperation(
+                "membership-changing FROST reshare requires the wire protocol".into(),
+            ));
+        }
+        if !current.contains(self.current_key_package.identifier()) {
+            return Err(SignerError::InvalidSessionConfiguration(
+                "local key package is not present in the refresh roster".into(),
+            ));
+        }
+
         let mut rng = OsRng;
         let new_n = self.config.new_participants.len() as u16;
         let new_t = self.config.new_min_signers;
+        if new_n == 0 || new_t == 0 || new_t > new_n {
+            return Err(SignerError::InvalidSessionConfiguration(format!(
+                "invalid refresh threshold t={new_t}, n={new_n}"
+            )));
+        }
+        if *self.current_key_package.min_signers() != new_t {
+            return Err(SignerError::UnsupportedOperation(
+                "threshold-changing FROST reshare requires the wire protocol".into(),
+            ));
+        }
 
-        let packages = frost::keys::dkg::round1::part1(*self.current_key_package.identifier(), new_n, new_t, &mut rng)
-            .map_err(|e| SignerError::RoundError(format!("reshare round1: {e}")))?;
+        let (secret_package, package) =
+            frost::keys::refresh::refresh_dkg_part1(*self.current_key_package.identifier(), new_n, new_t, &mut rng)
+                .map_err(|e| SignerError::RoundError(format!("refresh round1: {e}")))?;
 
-        Ok(BTreeMap::from([(*self.current_key_package.identifier(), packages.0)]))
+        Ok(ReshareRound1Output { secret_package, package })
     }
 
     /// Verify that the reshare produces a valid key package.
@@ -71,31 +113,73 @@ impl KeyReshare {
         pubkey_package: &frost::keys::PublicKeyPackage,
         old_pubkey_package: &frost::keys::PublicKeyPackage,
     ) -> Result<bool, SignerError> {
-        // The group public key must remain the same after reshare
-        Ok(pubkey_package.group_public() == old_pubkey_package.group_public())
+        // Both the participant package and the reconstructed public package
+        // must remain bound to the original group verifying key.
+        Ok(new_key_package.verifying_key() == old_pubkey_package.verifying_key()
+            && pubkey_package.verifying_key() == old_pubkey_package.verifying_key())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use frost_secp256k1::keys::generate_with_dealer;
+    use frost_secp256k1::keys::{generate_with_dealer, IdentifierList, KeyPackage};
 
     #[test]
     fn reshare_preserves_group_public_key() {
         let mut rng = OsRng;
 
-        // Generate original keys with dealer
-        let (shares, old_pubkey) = generate_with_dealer(5, 3, &mut rng).unwrap();
+        // Generate original keys with dealer.
+        let (shares, old_pubkey) = generate_with_dealer(5, 3, IdentifierList::Default, &mut rng).unwrap();
+        let old_key_package = KeyPackage::try_from(shares.into_values().next().unwrap()).unwrap();
 
-        // In a real reshare, each participant would use their existing key package.
-        // For testing, we verify that the group public key concept works.
-        let new_shares = generate_with_dealer(5, 3, &mut rng).unwrap();
-        let new_pubkey = new_shares.1;
+        assert!(KeyReshare::verify_new_key(&old_key_package, &old_pubkey, &old_pubkey).unwrap());
 
-        // The group public key changes with new dealer keygen (expected).
-        // In a proper reshare, the same group key is preserved.
-        // This test verifies the API works, not the cryptographic property.
-        assert!(KeyReshare::verify_new_key(&shares[0], &new_pubkey, &old_pubkey,).is_ok());
+        // A fresh dealer run changes the group key and must be rejected rather
+        // than presented as a successful reshare.
+        let (new_shares, new_pubkey) = generate_with_dealer(5, 3, IdentifierList::Default, &mut rng).unwrap();
+        let new_key_package = KeyPackage::try_from(new_shares.into_values().next().unwrap()).unwrap();
+        assert!(!KeyReshare::verify_new_key(&new_key_package, &new_pubkey, &old_pubkey).unwrap());
+    }
+
+    #[test]
+    fn membership_change_fails_closed() {
+        let mut rng = OsRng;
+        let (mut shares, _) = generate_with_dealer(3, 2, IdentifierList::Default, &mut rng).unwrap();
+        let ids = shares.keys().copied().collect::<Vec<_>>();
+        let config = ReshareConfig {
+            current_participants: ids.clone(),
+            new_participants: ids[..2].to_vec(),
+            new_min_signers: 2,
+        };
+        let key_package = KeyPackage::try_from(shares.remove(&ids[0]).unwrap()).unwrap();
+        let reshare = KeyReshare::new(key_package, config).unwrap();
+
+        assert!(matches!(reshare.round1(), Err(SignerError::UnsupportedOperation(_))));
+    }
+
+    #[test]
+    fn refresh_roster_is_a_unique_set() {
+        let mut rng = OsRng;
+        let (mut shares, _) = generate_with_dealer(3, 2, IdentifierList::Default, &mut rng).unwrap();
+        let ids = shares.keys().copied().collect::<Vec<_>>();
+        let key_package = KeyPackage::try_from(shares.remove(&ids[0]).unwrap()).unwrap();
+
+        let reordered = ReshareConfig {
+            current_participants: ids.clone(),
+            new_participants: ids.iter().rev().copied().collect(),
+            new_min_signers: 2,
+        };
+        assert!(KeyReshare::new(key_package.clone(), reordered).unwrap().round1().is_ok());
+
+        let duplicated = ReshareConfig {
+            current_participants: ids.clone(),
+            new_participants: vec![ids[0], ids[0], ids[2]],
+            new_min_signers: 2,
+        };
+        assert!(matches!(
+            KeyReshare::new(key_package, duplicated).unwrap().round1(),
+            Err(SignerError::InvalidSessionConfiguration(_))
+        ));
     }
 }

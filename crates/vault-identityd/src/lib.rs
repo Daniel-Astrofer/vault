@@ -460,23 +460,8 @@ impl IdentityServer {
 
         info!("identity server listening on {}", self.socket_path);
 
-        loop {
-            match listener.accept().await {
-                Ok((stream, _addr)) => {
-                    let app = app.clone();
-                    tokio::spawn(async move {
-                        let io = hyper_util::rt::TokioIo::new(stream);
-                        if let Err(e) = axum::serve(io, app).await {
-                            error!("connection error: {e}");
-                        }
-                    });
-                }
-                Err(e) => {
-                    error!("accept error: {e}");
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                }
-            }
-        }
+        axum::serve(listener, app).await?;
+        Ok(())
     }
 
     fn router(&self) -> Router {
@@ -747,7 +732,7 @@ async fn handle_sign(State(state): State<AppState>, Json(req): Json<SignEndpoint
     match daemon.sign(&bound_message) {
         Ok(sig) => {
             let resp = SignEndpointResponse {
-                message: format!("signed with domain separation ({})", op.domain_sep()),
+                message: format!("signed with domain separation ({})", String::from_utf8_lossy(op.domain_sep())),
                 ed25519_signature: hex::encode(&sig.ed25519),
                 ml_dsa65_signature: hex::encode(&sig.ml_dsa65),
             };

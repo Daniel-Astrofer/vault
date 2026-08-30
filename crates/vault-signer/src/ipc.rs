@@ -90,17 +90,6 @@ fn encode_message(msg: &SignerResponse) -> Result<Vec<u8>, SignerError> {
     Ok(buf)
 }
 
-fn decode_message(data: &[u8]) -> Result<SignerRequest, SignerError> {
-    if data.len() < 4 {
-        return Err(SignerError::Internal("message too short".into()));
-    }
-    let len = u32::from_be_bytes(data[..4].try_into().unwrap()) as usize;
-    if len > MAX_MESSAGE_SIZE || 4 + len > data.len() {
-        return Err(SignerError::Internal("invalid message length".into()));
-    }
-    serde_json::from_slice(&data[4..4 + len]).map_err(|e| SignerError::Internal(format!("deserialization: {e}")))
-}
-
 fn encode_request(msg: &SignerRequest) -> Result<Vec<u8>, SignerError> {
     let json = serde_json::to_vec(msg).map_err(|e| SignerError::Internal(format!("serialization: {e}")))?;
     if json.len() > MAX_MESSAGE_SIZE {
@@ -135,21 +124,21 @@ impl SignerIpc {
     where
         F: Fn(SignerRequest) -> SignerResponse,
     {
-        // Remove existing socket
-        let _ = std::fs::remove_file(&self.socket_path);
+        let socket_path = Path::new(&self.socket_path);
+        remove_stale_socket(socket_path)?;
 
-        let listener =
-            UnixListener::bind(&self.socket_path).map_err(|e| SignerError::Internal(format!("bind: {e}")))?;
+        let listener = UnixListener::bind(socket_path).map_err(|e| SignerError::Internal(format!("bind: {e}")))?;
 
         // Set restrictive permissions
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            if let Ok(meta) = std::fs::metadata(&self.socket_path) {
-                let mut perms = meta.permissions();
-                perms.set_mode(0o600);
-                let _ = std::fs::set_permissions(&self.socket_path, perms);
-            }
+            let meta = std::fs::metadata(socket_path)
+                .map_err(|e| SignerError::Internal(format!("read socket metadata: {e}")))?;
+            let mut perms = meta.permissions();
+            perms.set_mode(0o600);
+            std::fs::set_permissions(socket_path, perms)
+                .map_err(|e| SignerError::Internal(format!("set socket permissions: {e}")))?;
         }
 
         for stream in listener.incoming() {
@@ -197,6 +186,21 @@ impl SignerIpc {
         stream.write_all(&encoded).map_err(|e| SignerError::Internal(format!("write response: {e}")))?;
 
         Ok(())
+    }
+}
+
+/// Remove only a stale Unix socket. Refuse regular files and symlinks so a
+/// privileged signer cannot be tricked into deleting an arbitrary path.
+fn remove_stale_socket(path: &Path) -> Result<(), SignerError> {
+    use std::os::unix::fs::FileTypeExt;
+
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_socket() => {
+            std::fs::remove_file(path).map_err(|e| SignerError::Internal(format!("remove stale socket: {e}")))
+        }
+        Ok(_) => Err(SignerError::Internal(format!("refusing to replace non-socket path: {}", path.display()))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(SignerError::Internal(format!("inspect socket path: {error}"))),
     }
 }
 
@@ -282,5 +286,41 @@ mod tests {
             }
             _ => panic!("unexpected response"),
         }
+    }
+
+    #[test]
+    fn regular_file_at_socket_path_is_preserved() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("signer.sock");
+        std::fs::write(&path, b"do-not-delete").unwrap();
+
+        assert!(remove_stale_socket(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"do-not-delete");
+    }
+
+    #[test]
+    fn stale_unix_socket_can_be_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("signer.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        drop(listener);
+
+        remove_stale_socket(&path).unwrap();
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn symlink_at_socket_path_is_preserved() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target");
+        let path = dir.path().join("signer.sock");
+        std::fs::write(&target, b"do-not-delete").unwrap();
+        symlink(&target, &path).unwrap();
+
+        assert!(remove_stale_socket(&path).is_err());
+        assert!(std::fs::symlink_metadata(&path).unwrap().file_type().is_symlink());
+        assert_eq!(std::fs::read(&target).unwrap(), b"do-not-delete");
     }
 }

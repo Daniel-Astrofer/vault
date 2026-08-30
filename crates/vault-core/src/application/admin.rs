@@ -256,8 +256,8 @@ mod tests {
 
     #[test]
     fn days_to_date_known() {
-        // 2026-07-30 ≈ 20669 days since epoch
-        let days = 20669;
+        // 2026-07-30 is exactly 20,664 complete UTC days after 1970-01-01.
+        let days = 20_664;
         let (y, m, d) = days_to_date(days);
         assert_eq!(y, 2026);
         assert_eq!(m, 7);
