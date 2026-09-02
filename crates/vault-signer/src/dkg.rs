@@ -15,13 +15,15 @@ use crate::signer::SignerError;
 /// DKG round 1 output for a single participant.
 pub struct DkgRound1Output {
     pub secret_package: frost::keys::dkg::round1::SecretPackage,
-    pub public_package: frost::keys::dkg::round1::PublicPackage,
+    pub public_package: frost::keys::dkg::round1::Package,
 }
 
 /// DKG round 2 output for a single participant.
 pub struct DkgRound2Output {
     pub secret_package: frost::keys::dkg::round2::SecretPackage,
-    pub proof: frost::keys::dkg::Proof,
+    /// One encrypted/authenticated package per recipient. The caller must send
+    /// each package only to the identifier that indexes it.
+    pub packages: BTreeMap<Identifier, frost::keys::dkg::round2::Package>,
 }
 
 /// Result of a completed DKG: key package and public key package.
@@ -55,9 +57,8 @@ impl DkgParticipant {
     /// Execute DKG round 1.
     pub fn round1(&mut self) -> Result<DkgRound1Output, SignerError> {
         let mut rng = OsRng;
-        let (secret, public) =
-            frost::keys::dkg::round1::part1(self.identifier, self.max_signers, self.min_signers, &mut rng)
-                .map_err(|e| SignerError::RoundError(format!("dkg round1 part1: {e}")))?;
+        let (secret, public) = frost::keys::dkg::part1(self.identifier, self.max_signers, self.min_signers, &mut rng)
+            .map_err(|e| SignerError::RoundError(format!("dkg round1 part1: {e}")))?;
 
         self.round1_secret = Some(secret.clone());
 
@@ -67,24 +68,24 @@ impl DkgParticipant {
     /// Execute DKG round 2.
     pub fn round2(
         &self,
-        all_public_packages: &BTreeMap<Identifier, frost::keys::dkg::round1::PublicPackage>,
+        all_public_packages: &BTreeMap<Identifier, frost::keys::dkg::round1::Package>,
     ) -> Result<DkgRound2Output, SignerError> {
         let secret = self.round1_secret.as_ref().ok_or_else(|| SignerError::Internal("round1 not executed".into()))?;
 
-        let (round2_secret, proof) = frost::keys::dkg::part2(secret, all_public_packages)
+        let (round2_secret, packages) = frost::keys::dkg::part2(secret.clone(), all_public_packages)
             .map_err(|e| SignerError::RoundError(format!("dkg round2 part2: {e}")))?;
 
-        Ok(DkgRound2Output { secret_package: round2_secret, proof })
+        Ok(DkgRound2Output { secret_package: round2_secret, packages })
     }
 
     /// Finalize DKG, producing the key package and public key package.
     pub fn finalize(
         &self,
         round2_secret: &frost::keys::dkg::round2::SecretPackage,
-        all_round1_publics: &BTreeMap<Identifier, frost::keys::dkg::round1::PublicPackage>,
-        all_round2_publics: &BTreeMap<Identifier, frost::keys::dkg::round2::PublicPackage>,
+        all_round1_publics: &BTreeMap<Identifier, frost::keys::dkg::round1::Package>,
+        all_round2_publics: &BTreeMap<Identifier, frost::keys::dkg::round2::Package>,
     ) -> Result<DkgResult, SignerError> {
-        let (key_package, pubkey_package, _proof) =
+        let (key_package, pubkey_package) =
             frost::keys::dkg::part3(round2_secret, all_round1_publics, all_round2_publics)
                 .map_err(|e| SignerError::RoundError(format!("dkg finalize part3: {e}")))?;
 
@@ -128,26 +129,32 @@ impl DistributedKeyGeneration {
         // Round 2: each participant processes all round 1 public packages
         let mut round2_outputs = Vec::new();
         for p in &self.participants {
-            let output = p.round2(&round1_publics)?;
+            let peer_round1 = round1_publics
+                .iter()
+                .filter(|(identifier, _)| **identifier != p.identifier)
+                .map(|(identifier, package)| (*identifier, package.clone()))
+                .collect();
+            let output = p.round2(&peer_round1)?;
             round2_outputs.push(output);
-        }
-
-        // Build round 2 public packages from each participant's proof
-        // In frost-secp256k1, PublicPackage wraps ProofOfPossession
-        let mut round2_publics = BTreeMap::new();
-        for (i, p) in self.participants.iter().enumerate() {
-            let proof = &round2_outputs[i].proof;
-            // Construct PublicPackage from the proof bytes via new()
-            round2_publics.insert(
-                p.identifier,
-                frost::keys::dkg::round2::PublicPackage::new(proof.proof_of_possession().clone()),
-            );
         }
 
         // Finalize: each participant produces their key package
         let mut results = Vec::new();
         for (i, p) in self.participants.iter().enumerate() {
-            let result = p.finalize(&round2_outputs[i].secret_package, &round1_publics, &round2_publics)?;
+            let inbound_round2 = self
+                .participants
+                .iter()
+                .zip(&round2_outputs)
+                .filter_map(|(sender, output)| {
+                    output.packages.get(&p.identifier).cloned().map(|package| (sender.identifier, package))
+                })
+                .collect();
+            let peer_round1 = round1_publics
+                .iter()
+                .filter(|(identifier, _)| **identifier != p.identifier)
+                .map(|(identifier, package)| (*identifier, package.clone()))
+                .collect();
+            let result = p.finalize(&round2_outputs[i].secret_package, &peer_round1, &inbound_round2)?;
             results.push(result);
         }
 
@@ -178,18 +185,19 @@ mod tests {
         let mut nonces_list = Vec::new();
 
         for i in 0..3 {
-            let (nonces, comm) = frost::round1::commit(results[i].key_package.secret_share(), &mut rng);
+            let (nonces, comm) = frost::round1::commit(results[i].key_package.signing_share(), &mut rng);
             commitments.insert(*results[i].key_package.identifier(), comm);
             nonces_list.push((*results[i].key_package.identifier(), nonces));
         }
 
         let mut shares = BTreeMap::new();
-        for (id, nonces) in &nonces_list {
-            let share = frost::round2::sign(&results[0].key_package, nonces, &commitments, message).unwrap();
+        let signing_package = frost::SigningPackage::new(commitments, message);
+        for (i, (id, nonces)) in nonces_list.iter().enumerate() {
+            let share = frost::round2::sign(&signing_package, nonces, &results[i].key_package).unwrap();
             shares.insert(*id, share);
         }
 
-        let signature = frost::aggregate(&commitments, &shares, pubkey, message).unwrap();
-        assert!(pubkey.group_public().verify(message, &signature).is_ok());
+        let signature = frost::aggregate(&signing_package, &shares, pubkey).unwrap();
+        assert!(pubkey.verifying_key().verify(message, &signature).is_ok());
     }
 }

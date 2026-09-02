@@ -17,7 +17,7 @@ use std::sync::Mutex;
 
 use frost_secp256k1::round1::SigningCommitments;
 use frost_secp256k1::round2::SignatureShare;
-use frost_secp256k1::{self as frost, Identifier};
+use frost_secp256k1::Identifier;
 use vault_signer::ipc::{SignerIpc, SignerRequest, SignerResponse};
 use vault_signer::session::SigningSessionManager;
 use vault_signer::signer::{FrostSigner, SignerError};
@@ -129,13 +129,10 @@ fn handle_request(
 
             let identifiers: Result<Vec<_>, _> = participants
                 .iter()
-                .map(|b| {
-                    if b.len() >= 2 {
-                        let arr: [u8; 2] = [b[0], b[1]];
-                        Ok(Identifier::try_from(u16::from_be_bytes(arr)))
-                    } else {
-                        Identifier::try_from(b[0] as u16)
-                    }
+                .map(|b| match b.as_slice() {
+                    [high, low, ..] => Identifier::try_from(u16::from_be_bytes([*high, *low])),
+                    [single] => Identifier::try_from(*single as u16),
+                    [] => Identifier::try_from(0u16),
                 })
                 .collect();
 

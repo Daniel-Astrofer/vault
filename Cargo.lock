@@ -2056,13 +2056,19 @@ dependencies = [
 name = "kerosene-vault"
 version = "0.1.0"
 dependencies = [
- "axum",
- "axum-server",
  "rand 0.8.7",
  "reqwest 0.12.28",
- "tokio",
  "vault-core",
  "vault-identity-core",
+]
+
+[[package]]
+name = "kerosene-vault-app"
+version = "0.1.0"
+dependencies = [
+ "axum-server",
+ "tokio",
+ "vault-core",
 ]
 
 [[package]]
@@ -3766,7 +3772,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "068e763e8279de7ab94b6afebded2cb701678af094feb1c12ccb061b4783c1be"
 
 [[package]]
-name = "vault-core"
+name = "vault-adapters"
 version = "0.1.0"
 dependencies = [
  "aead",
@@ -3786,7 +3792,6 @@ dependencies = [
  "http-body-util",
  "hyper 1.11.0",
  "hyper-util",
- "kerosene-contracts",
  "libc",
  "ml-dsa",
  "ml-kem",
@@ -3805,9 +3810,77 @@ dependencies = [
  "tokio-rustls",
  "tower",
  "tower-http",
+ "vault-application",
+ "vault-domain",
  "vault-identity-core",
  "x25519-dalek",
  "x509-parser",
+ "zeroize",
+]
+
+[[package]]
+name = "vault-api"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "bytes",
+ "hex",
+ "http-body-util",
+ "hyper 1.11.0",
+ "hyper-util",
+ "kerosene-contracts",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "tower",
+ "vault-adapters",
+ "vault-application",
+ "vault-bootstrap",
+ "vault-domain",
+]
+
+[[package]]
+name = "vault-application"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "kerosene-contracts",
+ "serde_json",
+ "vault-domain",
+]
+
+[[package]]
+name = "vault-bootstrap"
+version = "0.1.0"
+dependencies = [
+ "reqwest 0.12.28",
+ "serde",
+ "vault-adapters",
+ "vault-application",
+ "vault-domain",
+]
+
+[[package]]
+name = "vault-core"
+version = "0.1.0"
+dependencies = [
+ "vault-adapters",
+ "vault-api",
+ "vault-application",
+ "vault-bootstrap",
+ "vault-domain",
+]
+
+[[package]]
+name = "vault-domain"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sha3 0.10.9",
  "zeroize",
 ]
 

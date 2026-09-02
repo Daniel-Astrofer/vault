@@ -3,11 +3,8 @@
 //! Implements the FROST key reshare protocol, allowing the signing group
 //! to change its membership or threshold without changing the group public key.
 
-use std::collections::BTreeMap;
-
 use frost_secp256k1 as frost;
 use frost_secp256k1::Identifier;
-use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 
 use crate::signer::SignerError;
@@ -48,18 +45,13 @@ impl KeyReshare {
         Ok(Self { current_key_package, config })
     }
 
-    /// Execute the reshare round 1 (generate new shares for new participants).
-    ///
-    /// Returns a package to send to each new participant.
-    pub fn round1(&self) -> Result<BTreeMap<Identifier, frost::keys::dkg::round1::SecretPackage>, SignerError> {
-        let mut rng = OsRng;
-        let new_n = self.config.new_participants.len() as u16;
-        let new_t = self.config.new_min_signers;
-
-        let packages = frost::keys::dkg::round1::part1(*self.current_key_package.identifier(), new_n, new_t, &mut rng)
-            .map_err(|e| SignerError::RoundError(format!("reshare round1: {e}")))?;
-
-        Ok(BTreeMap::from([(*self.current_key_package.identifier(), packages.0)]))
+    /// Resharing must preserve the existing group key and requires a dedicated,
+    /// authenticated multi-party protocol. Do not substitute a fresh DKG: that
+    /// silently changes the custody key.
+    pub fn round1(&self) -> Result<(), SignerError> {
+        Err(SignerError::Unsupported(
+            "FROST resharing is not implemented; refusing to generate a replacement group key".into(),
+        ))
     }
 
     /// Verify that the reshare produces a valid key package.
@@ -67,12 +59,12 @@ impl KeyReshare {
     /// In a real deployment, this would involve multiple rounds of communication
     /// between participants. For now, this is a simplified in-process version.
     pub fn verify_new_key(
-        new_key_package: &frost::keys::KeyPackage,
+        _new_key_package: &frost::keys::KeyPackage,
         pubkey_package: &frost::keys::PublicKeyPackage,
         old_pubkey_package: &frost::keys::PublicKeyPackage,
     ) -> Result<bool, SignerError> {
         // The group public key must remain the same after reshare
-        Ok(pubkey_package.group_public() == old_pubkey_package.group_public())
+        Ok(pubkey_package.verifying_key() == old_pubkey_package.verifying_key())
     }
 }
 
@@ -80,22 +72,25 @@ impl KeyReshare {
 mod tests {
     use super::*;
     use frost_secp256k1::keys::generate_with_dealer;
+    use rand::rngs::OsRng;
 
     #[test]
     fn reshare_preserves_group_public_key() {
         let mut rng = OsRng;
 
         // Generate original keys with dealer
-        let (shares, old_pubkey) = generate_with_dealer(5, 3, &mut rng).unwrap();
+        let (shares, old_pubkey) =
+            generate_with_dealer(5, 3, frost_secp256k1::keys::IdentifierList::Default, &mut rng).unwrap();
 
         // In a real reshare, each participant would use their existing key package.
         // For testing, we verify that the group public key concept works.
-        let new_shares = generate_with_dealer(5, 3, &mut rng).unwrap();
+        let new_shares = generate_with_dealer(5, 3, frost_secp256k1::keys::IdentifierList::Default, &mut rng).unwrap();
         let new_pubkey = new_shares.1;
 
         // The group public key changes with new dealer keygen (expected).
         // In a proper reshare, the same group key is preserved.
         // This test verifies the API works, not the cryptographic property.
-        assert!(KeyReshare::verify_new_key(&shares[0], &new_pubkey, &old_pubkey,).is_ok());
+        let new_key_package = frost::keys::KeyPackage::try_from(shares.into_values().next().unwrap()).unwrap();
+        assert!(KeyReshare::verify_new_key(&new_key_package, &new_pubkey, &old_pubkey).is_ok());
     }
 }

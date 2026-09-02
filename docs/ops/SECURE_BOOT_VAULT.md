@@ -69,7 +69,7 @@ ERROR: vault secure boot PCR mismatch
   PCR 7 (secure boot): expected C5D6... got 9A0B...
   Boot refused — possible firmware/bootloader compromise.
   Manual intervention required.
-  Run: scripts/vault/measure_pcr_policy.sh to capture new baseline if intentional.
+  Run: `scripts/measure_pcr_policy.sh` to capture a new baseline if intentional.
 ```
 
 Shares remain sealed. Vault does not start.
@@ -93,7 +93,7 @@ cp /etc/kerosene/vault-pcr-policy.expected /etc/kerosene/vault-pcr-policy.expect
 reboot
 
 # 5. After reboot: capture new baseline
-scripts/vault/measure_pcr_policy.sh
+scripts/measure_pcr_policy.sh
 
 # 6. Verify new baseline is intentional
 diff /etc/kerosene/vault-pcr-policy.expected.pre-update /etc/kerosene/vault-pcr-policy.expected

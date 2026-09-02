@@ -25,10 +25,10 @@ Tor profile does **not** publish `:7701–7703` on the host, so the local-full k
 
 ```bash
 # Lab variability only (static_token; expects Tor latency/retries)
-./scripts/vault/lab_dkg_wire_tor.sh
+./scripts/lab_dkg_wire_tor.sh
 
 # Ceremony-shaped path: mTLS over onions (SPIFFE URI and/or .onion DNS SAN)
-VAULT_AUTH_MODE=mtls ./scripts/vault/lab_dkg_wire_tor.sh
+VAULT_AUTH_MODE=mtls ./scripts/lab_dkg_wire_tor.sh
 ```
 
 What the script does:
@@ -58,7 +58,7 @@ Lab cert gen:
 
 ```bash
 VAULT_LAB_MTLS_ONION_SANS=a.onion,b.onion,c.onion \
-  ./scripts/vault/gen_lab_mtls_certs.sh
+  ./scripts/gen_lab_mtls_certs.sh
 ```
 
 SPIFFE URI is always on the server leaf — so verify works even if onions change and certs are not immediately rotated (prefer rotating leaves after onion discovery for dual coverage).
@@ -96,7 +96,7 @@ Shipped: SOCKS outbound + onion listeners + wire DKG + Tor timeouts/retries + **
 
 Still open:
 
-1. **Client-auth onion (authorized_clients)** — HS is v3 public onion; optional restricted discovery later. Script `scripts/vault/gen_tor_auth_clients.sh` generates X25519 key pairs. Compose mounts `infra/runtime/tor/authorized_clients/` as read-only. Set `VAULT_TOR_AUTH_CLIENTS=true` in your env to gate-on enable.
+1. **Client-auth onion (authorized_clients)** — HS is v3 public onion; optional restricted discovery later. Script `scripts/gen_tor_auth_clients.sh` generates X25519 key pairs. Runtime mounts belong to `kerosene-deploy`. Set `VAULT_TOR_AUTH_CLIENTS=true` in your environment to gate-on enable.
 2. **deploy.sh does not switch** to Tor mesh — intentional (local-full still clearnet lab).
 3. **Host Tor instead of sidecar** — supported via env (`VAULT_SOCKS_PROXY=socks5h://127.0.0.1:9050`) but not automated.
 4. **Anti-nonce / day-advance under Tor** — uses same SOCKS + mTLS client settings; long-run soak not automated in CI.
@@ -106,7 +106,7 @@ Still open:
 
 1. Generate X25519 keys offline on each operator machine:
    ```bash
-   ./scripts/vault/gen_tor_auth_clients.sh --client-count 3
+   ./scripts/gen_tor_auth_clients.sh --client-count 3
    ```
    This creates `infra/runtime/tor/authorized_clients/kerosene_service/client-N/` with `.auth` + `.x25519.key`.
 

@@ -1,0 +1,31 @@
+[package]
+name = "vault-api"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[features]
+default = ["production"]
+dealer_lab = ["vault-bootstrap/dealer_lab"]
+production = ["vault-bootstrap/production"]
+hybrid = ["vault-bootstrap/hybrid"]
+tee_hw = ["vault-bootstrap/tee_hw"]
+tpm = ["vault-bootstrap/tpm"]
+
+[dependencies]
+axum = "0.8"
+bytes = "1"
+hex = "0.4"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+kerosene-contracts.workspace = true
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
+tower = "0.5"
+vault-adapters = { path = "../vault-adapters", default-features = false }
+vault-application = { path = "../vault-application" }
+vault-bootstrap = { path = "../vault-bootstrap", default-features = false }
+vault-domain = { path = "../vault-domain" }

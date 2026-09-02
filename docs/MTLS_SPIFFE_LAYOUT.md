@@ -1,7 +1,7 @@
 # Vault mesh mTLS — SPIFFE-like layout (Gate)
 
-Lab ≠ go-live. Materials under `lab-certs/` are for **visualize / staging**;
-`ceremony-certs/` is the **SPIRE-equivalent ceremony CA** profile (unique SPIFFE
+Lab ≠ go-live. Materials under `var/lab-certs/` are for **visualize / staging**;
+`var/ceremony-certs/` is the **SPIRE-equivalent ceremony CA** profile (unique SPIFFE
 per vault + kfe, short-lived leaves). A real SPIRE agent is **not** required —
 paths and URI SANs mirror the SPIFFE SVID layout so production can drop in an
 agent later without changing trust-domain IDs.
@@ -35,11 +35,11 @@ A CA-valid leaf alone is not full power. DKG `sender_node_id` must equal the TLS
 
 ### Lab visualize (`gen_lab_mtls_certs.sh`)
 
-Default: unique SPIFFE per node under `lab-certs/nodes/{id}/` + flat aliases for
+Default: unique SPIFFE per node under `var/lab-certs/nodes/{id}/` + flat aliases for
 compose. Legacy shared alias: `VAULT_MTLS_SHARED_SPIFFE=1`.
 
 ```text
-lab-certs/
+var/lab-certs/
   ca.crt / ca.key
   vault-server.crt / .key          # alias → nodes/vault-1/server.*
   vault-client.crt / .key          # kfe
@@ -50,19 +50,19 @@ lab-certs/
   rotation.json
 ```
 
-### Ceremony CA (`gen_ceremony_mtls_certs.sh`)
+### Ceremony CA (`scripts/ceremony/gen_mtls_certs.sh`)
 
 SPIRE-equivalent Gate profile (short TTL, unique IDs, trust domain
 `kerosene.ceremony` by default):
 
 ```bash
-./scripts/vault/gen_ceremony_mtls_certs.sh
+./scripts/ceremony/gen_mtls_certs.sh
 VAULT_CEREMONY_MTLS_TTL_HOURS=24 \
-  ./scripts/vault/rotate_ceremony_mtls_certs.sh
+  ./scripts/ceremony/rotate_mtls_certs.sh
 ```
 
 ```text
-ceremony-certs/
+var/ceremony-certs/
   ca.crt / ca.key
   nodes/vault-1/server.crt|.key  client.crt|.key   # SPIFFE …/vault/vault-1
   nodes/vault-2/…
@@ -92,17 +92,17 @@ Infra wrapper: `infra/scripts/gen-ceremony-mtls.sh`.
 
 ```bash
 # Lab first materialization
-./scripts/vault/gen_lab_mtls_certs.sh
-VAULT_LAB_MTLS_TTL_HOURS=24 ./scripts/vault/rotate_lab_mtls_certs.sh
+./scripts/lab/gen_mtls_certs.sh
+VAULT_LAB_MTLS_TTL_HOURS=24 ./scripts/lab/rotate_mtls_certs.sh
 
 # Ceremony CA (preferred before genesis)
-./scripts/vault/gen_ceremony_mtls_certs.sh
+./scripts/ceremony/gen_mtls_certs.sh
 VAULT_CEREMONY_MTLS_TTL_HOURS=24 \
-  ./scripts/vault/rotate_ceremony_mtls_certs.sh
+  ./scripts/ceremony/rotate_mtls_certs.sh
 
 # Optional post-rotate hook
 VAULT_MTLS_ROTATE_HOOK=/path/to/hook.sh \
-  ./scripts/vault/rotate_ceremony_mtls_certs.sh
+  ./scripts/ceremony/rotate_mtls_certs.sh
 ```
 
 Hook receives env: `VAULT_LAB_MTLS_OUT` / `VAULT_CEREMONY_MTLS_OUT`,
@@ -134,10 +134,10 @@ Mint onion DNS SANs after HS discovery:
 
 ```bash
 VAULT_LAB_MTLS_ONION_SANS=a.onion,b.onion,c.onion \
-  ./scripts/vault/gen_ceremony_mtls_certs.sh
+  ./scripts/gen_ceremony_mtls_certs.sh
 ```
 
-`VAULT_AUTH_MODE=mtls ./scripts/vault/lab_dkg_wire_tor.sh` does this automatically.
+`VAULT_AUTH_MODE=mtls ./scripts/lab_dkg_wire_tor.sh` does this automatically.
 See `docs/CEREMONY_TOR.md`. Staging/production ceremony modes refuse `static_token`.
 
 ## kfe TLS properties

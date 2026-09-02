@@ -7,54 +7,20 @@ license = "UNLICENSED"
 publish = false
 
 [features]
-default = []
-dealer_lab = []
-production = []
-hybrid = []
-tee_hw = ["dep:sev-snp-utilities"]
-tpm = []
+default = ["production"]
+# Kept only so old build commands fail with an explicit security error.
+dealer_lab = ["vault-bootstrap/dealer_lab", "vault-api/dealer_lab"]
+production = ["vault-bootstrap/production", "vault-api/production"]
+hybrid = ["vault-bootstrap/hybrid", "vault-api/hybrid"]
+tee_hw = ["vault-bootstrap/tee_hw", "vault-api/tee_hw"]
+tpm = ["vault-bootstrap/tpm", "vault-api/tpm"]
 
 [lib]
 path = "src/lib.rs"
 
 [dependencies]
-aes-gcm = "0.10"
-aead = "0.5"
-argon2 = "0.5"
-axum = "0.8"
-axum-server = { version = "0.8", features = ["tls-rustls"] }
-bitcoin = { version = "0.32", features = ["base64"] }
-bytes = "1"
-chacha20poly1305 = "0.10"
-ed25519-dalek = { version = "2", features = ["rand_core"] }
-frost-secp256k1 = "3"
-frost-secp256k1-tr = "3"
-futures-util = "0.3"
-hkdf = "0.12"
-hex = "0.4"
-http-body-util = "0.1"
-libc = "0.2"
-hyper = { version = "1", features = ["server", "http1"] }
-hyper-util = { version = "0.1", features = ["tokio"] }
-kerosene-contracts.workspace = true
-ml-dsa = "0.1"
-ml-kem = "0.3"
-rand = "0.8"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking", "socks"] }
-rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "aws_lc_rs"] }
-rustls-pemfile = "2"
-secrecy = "0.10"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-sev-snp-utilities = { version = "2.600.0", optional = true }
-sha2 = "0.10"
-sha3 = "0.10"
-subtle = "2"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
-tokio-rustls = "0.26"
-tower = "0.5"
-tower-http = { version = "0.6", features = ["trace", "limit"] }
-vault-identity-core = { path = "../vault-identity-core" }
-x25519-dalek = "2"
-x509-parser = "0.16"
-zeroize = "1"
+vault-adapters = { path = "../vault-adapters", default-features = false }
+vault-api = { path = "../vault-api", default-features = false }
+vault-application = { path = "../vault-application" }
+vault-bootstrap = { path = "../vault-bootstrap", default-features = false }
+vault-domain = { path = "../vault-domain" }

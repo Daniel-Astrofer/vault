@@ -1,5 +1,11 @@
 # Plano: Rede de Vaults (Mesh) + Kerosene Banco
 
+> **Historical design record.** This document preserves earlier architecture
+> discussions and paths from the former monorepo. It is not an operational
+> runbook or a statement of current implementation status. Use
+> [docs/en/STATUS.md](en/STATUS.md) or
+> [docs/pt-BR/STATUS.md](pt-BR/STATUS.md) for the current state.
+
 Documento de discussão e baseline de implementação da nova infraestrutura de cofre/governança.
 
 Kerosene **permanece banco** (ledger de saldos, regras, produto). A mesh de vaults Rust é o **cofre + plano de controle** (DKG/reshare nos vaults, atestação, releases, FROST `2/3`, settlement).

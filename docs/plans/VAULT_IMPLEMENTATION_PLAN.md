@@ -1,5 +1,10 @@
 # Vault Mesh — Plano de Implementacao Restante (v2 — PQ-First)
 
+> **Historical planning record.** The checklist and monorepo paths below are
+> retained as migration evidence. They are not current instructions and must
+> not be used to operate or release Vault. See [current status](../en/STATUS.md)
+> or [estado atual](../pt-BR/STATUS.md).
+
 [SDD Check: Referenced `VAULT_MESH_PLAN.md` — Sections 2, 3, 10-18, Production Gate]
 [SDD Check: Referenced `backend/kerosene-vault/docs/DAY_ADVANCE_RESHARE.md` — Full]
 [SDD Check: Referenced `backend/kerosene-vault/docs/CEREMONY_TOR.md` — Full]

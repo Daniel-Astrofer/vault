@@ -1,5 +1,10 @@
 # HashiCorp Vault Post-Mesh Decision
 
+> **Historical decision record.** This document describes an earlier
+> operational-secrets evaluation. It is not a Vault Mesh runbook and does not
+> expand this repository beyond custody and signing. Current deployment-secret
+> decisions belong to `kerosene-deploy`.
+
 Analysis of current HashiCorp Vault usage and migration options once the vault mesh is operational.
 
 ## Current Usage
