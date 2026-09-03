@@ -1,0 +1,20 @@
+[package]
+name = "vault-bootstrap"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[features]
+default = ["production"]
+dealer_lab = ["vault-adapters/dealer_lab"]
+production = ["vault-adapters/production"]
+hybrid = ["vault-adapters/hybrid"]
+tee_hw = ["vault-adapters/tee_hw"]
+tpm = ["vault-adapters/tpm"]
+
+[dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
+serde = { version = "1", features = ["derive"] }
+vault-adapters = { path = "../vault-adapters", default-features = false }
+vault-application = { path = "../vault-application" }
+vault-domain = { path = "../vault-domain" }

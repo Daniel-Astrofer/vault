@@ -25,14 +25,14 @@ without a quote, seating treats the peer as `domestic`.
    - `VAULT_SHARE_STORE=aead_disk`
    - Optional TPM seal (disk-at-rest; **not** SEV): `VAULT_SHARE_TPM_SEAL=1` + real TPM, or lab mock `VAULT_SHARE_TPM_STUB=1`. Fail-closed without TPM unless lab `VAULT_SHARE_TPM_CLEAR_FALLBACK=1`.
    - `VAULT_DKG_MODE=distributed_wire`
-   - `VAULT_AUTH_MODE=mtls` + TLS paths (unique SPIFFE: `./scripts/gen_ceremony_mtls_certs.sh`)
-   - Mesh audit keys (F8): `./scripts/gen_mesh_audit_keys.sh` + `source ceremony-certs/audit/env.hint`
+   - `VAULT_AUTH_MODE=mtls` + TLS paths (unique SPIFFE: `./scripts/ceremony/gen_mtls_certs.sh`)
+   - Mesh audit keys (F8): `./scripts/ceremony/gen_audit_keys.sh` + `source var/ceremony-certs/audit/env.hint`
    - `VAULT_GENESIS_N=3` + reciprocal `VAULT_SEED_PEERS`
    - **Do not** set `ATTESTATION_STAGING_STUB` or `LAB_TIMELOCK_SCALE`
-2. Gate: `./scripts/genesis_ceremony_checklist.sh`
+2. Gate: `./scripts/ceremony/checklist.sh`
 3. Bring up peers (compose reference: `infra/docker/compose/vault-mesh-ceremony.compose.yaml`).
 4. Confirm `GET /health` (auth): `node_tier=domestic`, `attestation_mode=software`, `tee_available=false`, `genesis_roster` lists N ids. Public `GET /v1/health` returns status only (no roster).
-5. Run `./scripts/vault/genesis_dkg_wire.sh` (mTLS client certs).
+5. Run `./scripts/ceremony/dkg_wire.sh` (mTLS client certs).
 6. Cutover kfe: mesh enabled, `kfe.mpc.signing-enabled=false` — do not revive HashiCorp/mpc for treasury.
 
 ## Mixed SEV-priority
@@ -42,7 +42,7 @@ without a quote, seating treats the peer as `domestic`.
    and quote proofs: `VAULT_PEER_TIER_QUOTES=vault-epyc=<attestation-hex>`
    (required outside lab; otherwise SEV/SGX claims seat as domestic).
 3. Boot seating fills `VAULT_GENESIS_N` preferring SEV > SGX > domestic; authenticated `/health` `genesis_roster` shows the seated set.
-4. Run the **same** `genesis_dkg_wire.sh` — roster must match seating (enforced in production).
+4. Run the **same** `scripts/ceremony/dkg_wire.sh` — roster must match seating (enforced in production).
 
 ## Lab vs production
 
@@ -77,7 +77,7 @@ TPM binds disk-at-rest to the machine; it does **not** isolate share RAM after u
 | **CHANNELS → LND inject** | landed (on-chain fund): Decision-gate non-mutating; soft-reserve CHANNELS → CHANNELS Taproot PSBT to LND funding address (key ≠ USERS omnibus) → `openChannel` → commit; pending-channels refuse; durable Intent id + phase resume; commit-retry reconciler. Fail-closed without mesh fund txid. |
 | **Deposit xpub vs `tb1p`** | Ceremony yields stable mesh `tb1p` deposit (`tr()`); user-visible xpub / HD from group VK is not implemented; product `bitcoin.platform.master-xpub` ≠ mesh deposit |
 | **Economy / release durability (#18)** | `PersistedEconomy` / `PersistedReleaseMesh` under `VAULT_DATA_DIR` (process-local atomic snapshot) — **not** authenticated mesh BFT ledger; residual: quorum-replicated economy/release |
-| **Supply-chain audit (#38)** | `cargo audit` (cargo-audit `v0.22.2`, DB last-updated `2026-07-23T06:23:12+02:00`) found **0 HIGH/CRITICAL** advisories for `backend/kerosene-vault` (`vulnerabilities.found=false`). Advisory database contains **unmaintained** only (informational), no actionable HIGH/CRITICAL. |
+| **Supply-chain audit (#38)** | Historical evidence recorded an audit with no HIGH/CRITICAL advisories. Re-run `cargo audit` for the current checkout before relying on this gate. |
 | **Side-channel analysis (#39)** | Improved FROST round nonce zeroization on error paths in `frost_sign.rs` and `frost_wire_cosign.rs`. Residual: this is not a proof of side-channel freedom. |
 | **mTLS pin / CRL (#36)** | Ceremony CA + short-lived rotation (`gen_ceremony_mtls_certs` / `rotate_ceremony_mtls_certs`); runtime pin/CRL not enforced |
 | **Audit keys ≠ release (#F8)** | `docs/AUDIT_KEYS.md` + `gen_mesh_audit_keys.sh`; production hygiene requires allowlist; full audit ledger pipeline follow-up |

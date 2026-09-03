@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::signer::SignerError;
 
 /// Unique session identifier.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct SessionId(pub String);
 
 impl SessionId {
@@ -180,8 +180,8 @@ impl SigningSessionManager {
 
     /// Clean up expired sessions (older than the given duration in seconds).
     pub fn cleanup_expired(&mut self, max_age_secs: u64) {
-        use std::time::{SystemTime, UNIXEPOCH};
-        let now = SystemTime::now().duration_since(UNIXEPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
 
         self.sessions.retain(|_, session| {
             let age_ns = now.saturating_sub(session.created_at);
@@ -222,14 +222,10 @@ mod tests {
         {
             let session = manager.get_session_mut(&session_id).unwrap();
             let mut rng = rand::rngs::OsRng;
-            let (_, commitments1) = frost::round1::commit(
-                &frost::keys::SecretShare::new(id1, frost::Scalar::random(&mut rng)).unwrap(),
-                &mut rng,
-            );
-            let (_, commitments2) = frost::round1::commit(
-                &frost::keys::SecretShare::new(id2, frost::Scalar::random(&mut rng)).unwrap(),
-                &mut rng,
-            );
+            let (shares, _) =
+                frost::keys::generate_with_dealer(2, 2, frost::keys::IdentifierList::Default, &mut rng).unwrap();
+            let (_, commitments1) = frost::round1::commit(shares[&id1].signing_share(), &mut rng);
+            let (_, commitments2) = frost::round1::commit(shares[&id2].signing_share(), &mut rng);
 
             session.add_commitments(id1, commitments1).unwrap();
             session.add_commitments(id2, commitments2).unwrap();

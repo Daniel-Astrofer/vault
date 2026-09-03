@@ -1,0 +1,24 @@
+[package]
+name = "kerosene-vault-app"
+version = "0.1.0"
+edition = "2021"
+description = "Kerosene Vault executable"
+license = "UNLICENSED"
+publish = false
+
+[[bin]]
+name = "kerosene-vault"
+path = "src/main.rs"
+
+[features]
+default = ["production"]
+dealer_lab = ["vault-core/dealer_lab"]
+production = ["vault-core/production"]
+hybrid = ["vault-core/hybrid"]
+tee_hw = ["vault-core/tee_hw"]
+tpm = ["vault-core/tpm"]
+
+[dependencies]
+axum-server = { version = "0.8", features = ["tls-rustls"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
+vault-core = { path = "../../crates/vault-core" }

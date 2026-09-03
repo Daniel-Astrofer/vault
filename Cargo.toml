@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/*"]
+members = ["apps/*", "crates/*"]
 
 [workspace.dependencies]
 kerosene-contracts = { git = "https://github.com/Daniel-Astrofer/kerosene-contracts.git", rev = "5ab7bc130f71b9316ec5ff4adb7b98d3d9e4fc20" }
@@ -9,32 +9,82 @@ kerosene-contracts = { git = "https://github.com/Daniel-Astrofer/kerosene-contra
 name = "kerosene-vault"
 version = "0.1.0"
 edition = "2021"
-description = "Kerosene vault mesh node — thin binary wrapper"
+description = "Kerosene vault compatibility facade and integration-test harness"
 license = "UNLICENSED"
 publish = false
 
 [features]
-default = []
+default = ["production"]
+# Kept only so old build commands fail with an explicit security error.
 dealer_lab = ["vault-core/dealer_lab"]
 production = ["vault-core/production"]
 hybrid = ["vault-core/hybrid"]
 tee_hw = ["vault-core/tee_hw"]
 tpm = ["vault-core/tpm"]
 
-[[bin]]
-name = "kerosene-vault"
-path = "src/main.rs"
-
 [lib]
 path = "src/lib.rs"
+
+[[test]]
+name = "architecture_boundaries"
+path = "tests/contract/architecture_boundaries.rs"
+
+[[test]]
+name = "hybrid_envelope_kat"
+path = "tests/contract/hybrid_envelope_kat.rs"
+
+[[test]]
+name = "application_health"
+path = "tests/application/application_health.rs"
+
+[[test]]
+name = "economy_f9"
+path = "tests/application/economy_f9.rs"
+
+[[test]]
+name = "governance_rewards"
+path = "tests/application/governance_rewards.rs"
+
+[[test]]
+name = "ledger_epoch"
+path = "tests/application/ledger_epoch.rs"
+
+[[test]]
+name = "threshold_sign"
+path = "tests/application/threshold_sign.rs"
+
+[[test]]
+name = "pq_adversarial"
+path = "tests/adversarial/pq_adversarial.rs"
+
+[[test]]
+name = "pentest_harness"
+path = "tests/adversarial/pentest_harness.rs"
+
+[[test]]
+name = "lab_e2e_suite"
+path = "tests/e2e/lab_e2e_suite.rs"
+
+[[test]]
+name = "genesis_seating"
+path = "tests/integration/genesis_seating.rs"
+
+[[test]]
+name = "migration_drill"
+path = "tests/integration/migration_drill.rs"
+
+[[test]]
+name = "mtls_boot"
+path = "tests/integration/mtls_boot.rs"
+
+[[test]]
+name = "release_mesh"
+path = "tests/integration/release_mesh.rs"
 
 [dev-dependencies]
 rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
 
 [dependencies]
-axum = "0.8"
-axum-server = { version = "0.8", features = ["tls-rustls"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
 vault-core = { path = "crates/vault-core" }
 vault-identity-core = { path = "crates/vault-identity-core" }

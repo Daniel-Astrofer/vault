@@ -1,0 +1,27 @@
+//! Durable, in-memory and sealed-share persistence adapters.
+mod bucket_memory;
+mod durable_fs;
+mod economy_memory;
+mod ledger_memory;
+mod peer_memory;
+mod release_memory;
+mod release_persist;
+mod session_persist;
+mod share_aead;
+mod share_tee;
+mod share_tpm;
+mod share_tpm_tss;
+mod sync_util;
+pub use bucket_memory::*;
+pub use durable_fs::*;
+pub use economy_memory::*;
+pub use ledger_memory::*;
+pub use peer_memory::*;
+pub use release_memory::*;
+pub use release_persist::*;
+pub use session_persist::*;
+pub use share_aead::*;
+pub use share_tee::*;
+pub use share_tpm::*;
+pub use share_tpm_tss::*;
+pub(crate) use sync_util::lock_mutex;

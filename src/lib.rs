@@ -1,5 +1,5 @@
 //! Re-export `vault_core` for backward compatibility with existing tests
-//! and the thin `src/main.rs` binary wrapper.
+//! and the executable in `apps/kerosene-vault`.
 //!
 //! All implementation code now lives in `crates/vault-core/`.
 

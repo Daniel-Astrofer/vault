@@ -1,6 +1,9 @@
 /target/
 /target-roomy/
 Cargo.lock
-/lab-certs/
-/ceremony-certs/
+# Local runtime and ceremony output. This can contain private certificates,
+# shares, nonces and transcripts; never add it to Git.
+/var/*
+!/var/.gitkeep
+!/var/README.md
 .smart_build_state.json
