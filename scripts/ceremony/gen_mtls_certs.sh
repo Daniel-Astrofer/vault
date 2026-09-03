@@ -5,12 +5,13 @@
 # the same spiffe:// paths under ceremony-certs/spiffe/.
 #
 # Usage:
-#   ./scripts/gen_ceremony_mtls_certs.sh
+#   ./scripts/ceremony/gen_mtls_certs.sh
 #   VAULT_MTLS_NODE_IDS=vault-1,vault-2,vault-3 \
 #   VAULT_MTLS_TRUST_DOMAIN=kerosene.ceremony \
 #   VAULT_CEREMONY_MTLS_TTL_HOURS=24 \
-#     ./scripts/gen_ceremony_mtls_certs.sh
+#     ./scripts/ceremony/gen_mtls_certs.sh
 set -euo pipefail
+umask 077
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -129,7 +130,7 @@ cat <<EOF
   #   kfe.vaultmesh.tls.key-path=$OUT_DIR/vault-client.pkcs8.key
   #   kfe.vaultmesh.tls.ca-path=$OUT_DIR/ca.crt
   # Rotate leaves:
-  #   VAULT_CEREMONY_MTLS_TTL_HOURS=24 ./scripts/rotate_ceremony_mtls_certs.sh
+  #   VAULT_CEREMONY_MTLS_TTL_HOURS=24 ./scripts/ceremony/rotate_mtls_certs.sh
   # SPIFFE tree: $OUT_DIR/spiffe/
 Ceremony mTLS materials written to $OUT_DIR (testnet/ceremony Gate — not mainnet).
 EOF

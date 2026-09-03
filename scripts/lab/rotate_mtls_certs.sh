@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 # Rotate short-lived leaf certs for lab/staging mTLS (reuses CA).
 # SPIFFE-like layout refreshed in place. Lab ≠ go-live / ceremony.
-# Prefer ./scripts/rotate_ceremony_mtls_certs.sh for ceremony CA profile.
+# Prefer ./scripts/ceremony/rotate_mtls_certs.sh for ceremony CA profile.
 #
 # Usage:
-#   ./scripts/gen_lab_mtls_certs.sh          # once (creates CA)
-#   VAULT_LAB_MTLS_TTL_HOURS=24 ./scripts/rotate_lab_mtls_certs.sh
+#   ./scripts/lab/gen_mtls_certs.sh          # once (creates CA)
+#   VAULT_LAB_MTLS_TTL_HOURS=24 ./scripts/lab/rotate_mtls_certs.sh
 #
 # Optional reload hook:
-#   VAULT_MTLS_ROTATE_HOOK=/path/to/hook.sh ./scripts/rotate_lab_mtls_certs.sh
+#   VAULT_MTLS_ROTATE_HOOK=/path/to/hook.sh ./scripts/lab/rotate_mtls_certs.sh
 set -euo pipefail
+umask 077
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -29,7 +30,7 @@ UNIQUE="${VAULT_MTLS_SHARED_SPIFFE:-0}"
 NODE_IDS_CSV="$(mtls_default_node_ids)"
 
 if [[ ! -f "$OUT_DIR/ca.crt" || ! -f "$OUT_DIR/ca.key" ]]; then
-  echo "error: CA missing under $OUT_DIR — run gen_lab_mtls_certs.sh first" >&2
+  echo "error: CA missing under $OUT_DIR — run scripts/lab/gen_mtls_certs.sh first" >&2
   exit 1
 fi
 

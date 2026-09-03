@@ -12,6 +12,7 @@
 #     --pub ceremony-certs/audit/operators/audit-ops-1.pub \
 #     --message event.json --sig event.sig
 set -euo pipefail
+umask 077
 
 usage() {
   sed -n '2,16p' "$0" | sed 's/^# //;s/^#//'

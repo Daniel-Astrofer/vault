@@ -1,22 +1,21 @@
 #!/usr/bin/env bash
 # Lab: run over-wire FROST DKG across 3 vault peers (no dealer).
-# Expects vault-mesh-lab.compose.yaml with VAULT_DKG_MODE=distributed_wire.
+# Expects three explicitly managed lab members with VAULT_DKG_MODE=distributed_wire.
 #
 # Auth (peer rounds):
 #   VAULT_AUTH_MODE=static_token  → X-Vault-Token (default lab)
 #   VAULT_AUTH_MODE=mtls          → HTTPS + client cert (no X-Vault-Token)
 #
 # Usage (repo root):
-#   VAULT_DKG_MODE=distributed_wire docker compose -f infra/docker/compose/vault-mesh-lab.compose.yaml up --build -d
-#   ./scripts/vault/lab_dkg_wire.sh
+#   ./scripts/lab/dkg_wire.sh
 #
-# mTLS lab (after ./scripts/vault/gen_lab_mtls_certs.sh):
+# mTLS lab (after ./scripts/lab/gen_mtls_certs.sh):
 #   VAULT_AUTH_MODE=mtls \
-#   VAULT_TLS_CLIENT_CERT=./backend/kerosene-vault/lab-certs/vault-client.crt \
-#   VAULT_TLS_CLIENT_KEY=./backend/kerosene-vault/lab-certs/vault-client.key \
-#   VAULT_TLS_CA=./backend/kerosene-vault/lab-certs/ca.crt \
+#   VAULT_TLS_CLIENT_CERT=./var/lab-certs/vault-client.crt \
+#   VAULT_TLS_CLIENT_KEY=./var/lab-certs/vault-client.key \
+#   VAULT_TLS_CA=./var/lab-certs/ca.crt \
 #   VAULT1_URL=https://127.0.0.1:7701 VAULT2_URL=https://127.0.0.1:7702 VAULT3_URL=https://127.0.0.1:7703 \
-#   ./scripts/vault/lab_dkg_wire.sh
+#   ./scripts/lab/dkg_wire.sh
 #
 # In-process fallback (no compose peers): VAULT_DKG_MODE=distributed inside one process.
 set -euo pipefail

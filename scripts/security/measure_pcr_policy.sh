@@ -14,6 +14,7 @@
 #   - TPM 2.0 device (/dev/tpmrm0 or /dev/tpm0)
 
 set -euo pipefail
+umask 077
 
 POLICY_FILE="${1:-/etc/kerosene/vault-pcr-policy.expected}"
 PCR_BANK="${VAULT_PCR_BANK:-sha256}"

@@ -5,7 +5,7 @@ set -euo pipefail
 # and audit signatures after genesis ceremony completes.
 #
 # Usage:
-#   VAULT_CEREMONY_DIR=/path/to/ceremony-artifacts ./scripts/vault/verify_ceremony_transcript.sh
+#   VAULT_CEREMONY_DIR=/path/to/ceremony-artifacts ./scripts/ceremony/verify_transcript.sh
 #
 # Ceremony artifact layout expected:
 #   $VAULT_CEREMONY_DIR/

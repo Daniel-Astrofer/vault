@@ -144,24 +144,23 @@ case "$MODE" in
     fi
 
     echo
-    echo "Manual ceremony steps (same FROST wire path as lab; config only differs):"
+    echo "Manual ceremony steps:"
     echo "  1. Bring N vaults with identical constitution seed / peer set on **private Tor mesh**"
     echo "     - VAULT_TRANSPORT=tor VAULT_SOCKS_PROXY=socks5h://127.0.0.1:9050"
     echo "     - VAULT_SEED_PEERS=id=http://….onion:7701 (no clearnet publish; https under mTLS)"
     echo "     - VAULT_AUTH_MODE=mtls + VAULT_TLS_* + VAULT_TLS_VERIFY_MODE=onion_or_spiffe"
     echo "     - VAULT_TLS_PEER_SPIFFE_ID=spiffe://…/vault/vault-1,spiffe://…/vault/vault-2,… (unique; gen_ceremony_mtls_certs.sh)"
-    echo "     - Audit keys: ./scripts/gen_mesh_audit_keys.sh + source audit/env.hint (F8; ≠ release ≠ settlement)"
+    echo "     - Audit keys: ./scripts/ceremony/gen_audit_keys.sh + source audit/env.hint (F8; ≠ release ≠ settlement)"
     echo "     - All domestic: VAULT_NODE_TIER=domestic ATTESTATION_MODE=software VAULT_SHARE_STORE=aead_disk"
     echo "     - Optional TPM: VAULT_SHARE_TPM_SEAL=1 (fail-closed without TPM; lab stub VAULT_SHARE_TPM_STUB=1; clear fallback lab-only)"
     echo "     - Mixed: set VAULT_PEER_TIERS=id=sev,... so seating prefers SEV > SGX > domestic"
-    echo "     - Lab Tor mTLS: VAULT_AUTH_MODE=mtls ./scripts/vault/lab_dkg_wire_tor.sh"
     echo "  2. Verify honest labels on GET /v1/health (node_tier, attestation_mode, tee_available, genesis_roster)"
-    echo "  3. Run ./scripts/vault/genesis_dkg_wire.sh via SOCKS to onions (mTLS client certs)"
+    echo "  3. Run ./scripts/ceremony/dkg_wire.sh via SOCKS to onions (mTLS client certs)"
     echo "  4. Freeze mpc-sidecar / HashiCorp wallet-arming (kfe.mpc.signing-enabled=false)"
     echo "  5. Enable kfe.vaultmesh.enabled=true + mesh-only=true (no hard tee_hw require)"
     echo "  6. Smoke Intent → Receipt; confirm fail-stop runbook"
     echo "  7. Do NOT re-enable mpc as silent rollback"
-    echo "  Note: deploy default is vault-mesh-lab; use KEROSENE_VAULT_MESH_PROFILE=tor for Tor mesh."
+    echo "  Note: member lifecycle and Tor identities belong to the private operations checkout."
     ;;
   staging)
     check "$([[ "${ATT}" == "sev" || "${ATT}" == "sgx" || "${ATT}" == "software" ]] && echo 1 || echo 0)" \
@@ -182,10 +181,8 @@ case "$MODE" in
     ;;
   *)
     echo "Lab mode: no production gates. Compose sets VAULT_NODE_TIER=domestic + ATTESTATION_MODE=sim."
-    echo "Clearnet visualize: VAULT_DKG_MODE=distributed_wire + lab_dkg_wire.sh"
-echo "Tor variability (token): ./scripts/vault/lab_dkg_wire_tor.sh"
-echo "Tor ceremony-shaped mTLS: VAULT_AUTH_MODE=mtls ./scripts/vault/lab_dkg_wire_tor.sh"
-    echo "  (docs/CEREMONY_TOR.md — onion SAN / SPIFFE verify)."
+    echo "Lab wire DKG: ./scripts/lab/dkg_wire.sh against an explicitly managed lab."
+    echo "Production Tor ceremony: docs/operations/CEREMONY_TOR.md."
     ;;
 esac
 

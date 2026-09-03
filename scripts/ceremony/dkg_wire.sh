@@ -1,23 +1,19 @@
 #!/usr/bin/env bash
-# Production-native / lab-shared over-wire FROST DKG (no dealer).
-# Same protocol as lab_dkg_wire.sh; defaults toward ceremony (mTLS + seated roster).
-#
-# Lab visualize:
-#   VAULT_DKG_MODE=distributed_wire docker compose -f infra/docker/compose/vault-mesh-lab.compose.yaml up --build -d
-#   VAULT_AUTH_MODE=static_token ./scripts/vault/genesis_dkg_wire.sh
+# Production-native over-wire FROST DKG (no dealer).
 #
 # Production / all-domestic (Ryzen):
-#   # after checklist + compose with VAULT_CEREMONY_MODE=production ATTESTATION_MODE=software
+#   # after the private operations overlay has started the seated members
 #   VAULT_AUTH_MODE=mtls \
 #   VAULT_TLS_CLIENT_CERT=... VAULT_TLS_CLIENT_KEY=... VAULT_TLS_CA=... \
-#   ./scripts/vault/genesis_dkg_wire.sh
+#   VAULT1_URL=https://member-1.onion VAULT2_URL=https://member-2.onion \
+#   VAULT3_URL=https://member-3.onion VAULT_SOCKS_PROXY=socks5h://127.0.0.1:9050 \
+#   ./scripts/ceremony/dkg_wire.sh
 #
 # Mixed SEV-priority: set VAULT_PEER_TIERS on each node before boot; omit ROSTER to use
 # seated genesis_roster from GET /v1/health.
 set -euo pipefail
 
 AUTH_MODE="${VAULT_AUTH_MODE:-mtls}"
-TOKEN="${VAULT_API_TOKEN:-}"
 SESSION_ID="${VAULT_DKG_SESSION:-ceremony-dkg-$(date -u +%Y%m%dT%H%M%SZ)}"
 # Empty ROSTER → each vault uses its seated genesis_roster (SEV-priority).
 ROSTER_JSON="${VAULT_DKG_ROSTER_JSON:-}"
@@ -42,25 +38,22 @@ case "$AUTH_MODE" in
     fi
     CURL_AUTH=(--cert "$CERT" --key "$KEY" --cacert "$CA")
     ;;
-  static_token|*)
-    if [[ -z "$TOKEN" ]]; then
-      echo "static_token auth requires VAULT_API_TOKEN" >&2
-      exit 1
-    fi
-    CURL_AUTH=(-H "X-Vault-Token: ${TOKEN}")
-    # Lab HTTP defaults when not overridden.
-    BASES=(
-      "${VAULT1_URL:-http://127.0.0.1:7701}"
-      "${VAULT2_URL:-http://127.0.0.1:7702}"
-      "${VAULT3_URL:-http://127.0.0.1:7703}"
-    )
+  *)
+    echo "Production ceremony requires VAULT_AUTH_MODE=mtls." >&2
+    exit 1
     ;;
 esac
+
+CURL_TRANSPORT=()
+if [[ -n "${VAULT_SOCKS_PROXY:-}" ]]; then
+  CURL_TRANSPORT=(--proxy "$VAULT_SOCKS_PROXY")
+fi
 
 post_json() {
   local url="$1"
   local body="$2"
   curl -fsS -X POST \
+    "${CURL_TRANSPORT[@]}" \
     "${CURL_AUTH[@]}" \
     -H "Content-Type: application/json" \
     -d "$body" \
@@ -69,11 +62,11 @@ post_json() {
 
 get_json() {
   local url="$1"
-  curl -fsS "${CURL_AUTH[@]}" "$url"
+  curl -fsS "${CURL_TRANSPORT[@]}" "${CURL_AUTH[@]}" "$url"
 }
 
 echo "== Over-wire FROST DKG session=$SESSION_ID (auth=$AUTH_MODE, no dealer) =="
-echo "   Same binary path as lab; seating from boot (SEV > SGX > domestic)"
+echo "   Seating comes from authenticated member health (SEV > SGX > domestic)."
 
 # Resolve roster from first vault health when not provided.
 if [[ -z "$ROSTER_JSON" ]]; then
@@ -159,4 +152,4 @@ for base in "${BASES[@]}"; do
   echo "  $base -> $st"
 done
 
-echo "OK: over-wire DKG complete (production-native path; lab uses same rounds)."
+echo "OK: production over-wire DKG completed."

@@ -14,14 +14,14 @@
 # Starts/deliver/finalize use the TARGET vault's own peer cert.
 #
 # Usage (repo root):
-#   VAULT_DKG_MODE=distributed_wire docker compose -f infra/docker/compose/vault-mesh-lab.compose.yaml up --build -d
-#   ./scripts/vault/lab_dkg_tr_wire.sh
+#   # Start three explicitly managed lab members with distributed_wire enabled.
+#   ./scripts/lab/dkg_tr_wire.sh
 #
 # mTLS lab:
 #   VAULT_AUTH_MODE=mtls \
-#   VAULT_TLS_CA=./backend/kerosene-vault/lab-certs/ca.crt \
+#   VAULT_TLS_CA=./var/lab-certs/ca.crt \
 #   VAULT1_URL=https://127.0.0.1:7701 VAULT2_URL=https://127.0.0.1:7702 VAULT3_URL=https://127.0.0.1:7703 \
-#   ./scripts/vault/lab_dkg_tr_wire.sh
+#   ./scripts/lab/dkg_tr_wire.sh
 set -euo pipefail
 
 AUTH_MODE="${VAULT_AUTH_MODE:-static_token}"

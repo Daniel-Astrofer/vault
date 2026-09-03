@@ -6,9 +6,10 @@
 #   audit-ca.pub / operators/*.key + *.pub + allowlist.txt
 #
 # Usage:
-#   ./scripts/gen_mesh_audit_keys.sh
-#   VAULT_AUDIT_OPERATORS=ops-1,ops-2,monitor ./scripts/gen_mesh_audit_keys.sh
+#   ./scripts/ceremony/gen_audit_keys.sh
+#   VAULT_AUDIT_OPERATORS=ops-1,ops-2,monitor ./scripts/ceremony/gen_audit_keys.sh
 set -euo pipefail
+umask 077
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"

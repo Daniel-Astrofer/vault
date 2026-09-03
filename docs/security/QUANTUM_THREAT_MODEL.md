@@ -1,8 +1,17 @@
+<!--
+Kerosene documentation metadata
+status: review-required
+audience: internal/restricted
+owner: vault
+source_of_truth: vault
+last_reviewed: 2026-09-03
+-->
+
 # Quantum Threat Model — Kerosene Vault Mesh
 
 > **Document Status:** Draft  
 > **Last Updated:** 2026-07-30  
-> **Related:** `docs/PQ_KEY_ARCHITECTURE.md`, `docs/plans/VAULT_IMPLEMENTATION_PLAN.md`
+> **Related:** `docs/PQ_KEY_ARCHITECTURE.md`, `docs/history/VAULT_IMPLEMENTATION_PLAN.md`
 
 ## 1. Adversary Model
 

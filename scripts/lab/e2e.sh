@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Lab E2E / §13.4 suite entrypoint (F6).
 # Usage: from repo root or this directory:
-#   ./scripts/lab_e2e.sh
+#   ./scripts/lab/e2e.sh
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
