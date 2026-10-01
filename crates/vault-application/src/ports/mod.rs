@@ -63,6 +63,18 @@ pub trait SourceArchiveStorePort: Send + Sync {
     ) -> Result<(vault_domain::SourceArchiveReceiptV1, Vec<u8>), DomainError>;
 }
 
+pub trait GitArchiveStorePort: Send + Sync {
+    fn approve_git_archive(&self, approval: vault_domain::GitArchiveApprovalV2) -> Result<(), vault_domain::GitArchiveError>;
+    fn git_archive_approval(&self, release_id: &str, repository_id: &str) -> Result<vault_domain::GitArchiveApprovalV2, vault_domain::GitArchiveError>;
+    fn put_git_archive(&self, receipt: vault_domain::GitArchiveReceiptV2, bytes: &[u8]) -> Result<vault_domain::GitArchiveReceiptV2, vault_domain::GitArchiveError>;
+    fn get_git_archive(&self, release_id: &str, repository_id: &str) -> Result<(vault_domain::GitArchiveReceiptV2, Vec<u8>), vault_domain::GitArchiveError>;
+}
+
+pub trait GitBundleVerifierPort: Send + Sync {
+    fn available(&self) -> bool;
+    fn verify(&self, approval: &vault_domain::GitArchiveApprovalV2, bytes: &[u8]) -> Result<vault_domain::GitBundleVerificationV2, vault_domain::GitArchiveError>;
+}
+
 /// Release candidate + allowlist state shared across vaults in the lab mesh.
 pub trait ReleaseStorePort: Send + Sync {
     fn policy(&self) -> Result<ReleasePolicy, DomainError>;

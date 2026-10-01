@@ -58,6 +58,12 @@ pub fn build_admin_router(runtime: Arc<VaultRuntime>) -> Router {
         context: Arc::new(move || evidence_service.release_compatibility_context()),
     });
     let state = AdminApiState { service, auth_token };
+    let git_archive = super::git_archive::git_archive_router(super::git_archive::GitArchiveState {
+        store: crate::adapters::PersistedGitArchives::open(state.service.runtime().release_mesh.git_archive_root())
+            .ok().map(|store| Arc::new(store) as Arc<dyn crate::application::GitArchiveStorePort>),
+        verifier: Arc::new(crate::adapters::SafeGitBundleVerifier::from_env()),
+        clock: Arc::new(crate::adapters::SystemClock),
+    });
 
     let protected = Router::new()
         .route("/admin/status", get(admin_status_handler))
@@ -66,7 +72,8 @@ pub fn build_admin_router(runtime: Arc<VaultRuntime>) -> Router {
         .route("/admin/ceremony", get(admin_ceremony_handler))
         .route("/admin/compatibility", get(admin_compatibility_handler))
         .route("/admin/audit-reference", get(admin_audit_reference_handler))
-        .merge(evidence);
+        .merge(evidence)
+        .merge(git_archive);
 
     protect_admin_routes(protected, state.auth_token.clone())
         .layer(axum::extract::DefaultBodyLimit::max(64 * 1024))

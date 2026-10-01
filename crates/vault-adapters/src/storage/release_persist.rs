@@ -26,6 +26,10 @@ pub struct PersistedReleaseMesh {
 impl PersistedReleaseMesh {
     pub const CURRENT_STORAGE_VERSION: u16 = 1;
 
+    pub fn git_archive_root(&self) -> PathBuf {
+        self.blobs_dir.with_file_name("git_archives_v2")
+    }
+
     pub fn open(root: impl Into<PathBuf>, policy: ReleasePolicy) -> Result<Self, DomainError> {
         let root = root.into();
         reject_link_components(&root)?;

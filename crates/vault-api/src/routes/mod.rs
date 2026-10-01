@@ -4,3 +4,4 @@ mod public;
 pub use admin::*;
 pub use public::*;
 mod source_evidence;
+mod git_archive;

@@ -11,6 +11,7 @@ mod release;
 mod share_migration;
 mod signing;
 mod source_evidence;
+mod git_archive;
 
 pub use economy::*;
 pub use health::*;
@@ -24,3 +25,4 @@ pub use release::*;
 pub use share_migration::*;
 pub use signing::*;
 pub use source_evidence::*;
+pub use git_archive::*;

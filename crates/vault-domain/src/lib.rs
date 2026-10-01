@@ -43,6 +43,7 @@ pub use release::{
     SOURCE_BUNDLE_MAX_CONTENT_BYTES, SOURCE_BUNDLE_MAX_FILES,
 };
 pub use release::{DrillReport, QuantumMigrationConfig, QuantumState, SweepReport, TransitionAuth, UtxoRecord};
+pub use release::{GitArchiveApprovalV2, GitArchiveError, GitArchiveReceiptV2, GitBundleVerificationV2, GIT_BUNDLE_MAX_BYTES};
 pub use signing::{
     derive_nonce, eval_poly, field_add, field_mul, interpolate_secret, lab_random_u64, nonce_commitment,
     CombinedSignature, GroupKey, KeyShare, PartialSignature, ShareIndex, SigningPhase, SigningSession, LAB_PRIME,

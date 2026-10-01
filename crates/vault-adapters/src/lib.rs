@@ -77,3 +77,5 @@ pub use storage::{
     VAULT_PCR_BASE,
 };
 pub use system::SystemClock;
+pub use storage::PersistedGitArchives;
+pub use system::SafeGitBundleVerifier;
