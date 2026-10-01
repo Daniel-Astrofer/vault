@@ -279,8 +279,8 @@ mod tests {
 
     #[test]
     fn days_to_date_known() {
-        // 2026-07-30 ≈ 20669 days since epoch
-        let days = 20669;
+        // Exact Unix-day vector: 2026-07-30 is 20664 days since epoch.
+        let days = 20664;
         let (y, m, d) = days_to_date(days);
         assert_eq!(y, 2026);
         assert_eq!(m, 7);
