@@ -14,7 +14,8 @@ No new unauthenticated route is introduced.
 
 The archive identity is the tuple `(releaseId, repositoryId)`. A Cell can
 therefore retain core, kfe, node, vault, admin, clients, contracts, shared,
-web-page and deploy histories under one release ID. Disk record names hash a
+rails and deploy histories under one release ID. The web-page component is
+built from the clients repository. Disk record names hash a
 JSON tuple rather than ambiguous concatenated identifiers. Bundle blobs are
 deduplicated by SHA-256. All identifiers are validated before path construction.
 

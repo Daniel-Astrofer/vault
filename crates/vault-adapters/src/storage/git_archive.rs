@@ -183,7 +183,7 @@ mod git_archive_tests {
     fn git_archive_multiple_repositories_survive_restart_and_cannot_be_replaced() {
         let dir = tempfile::tempdir().unwrap();
         let store = PersistedGitArchives::open(dir.path()).unwrap();
-        for repo in ["core", "kfe", "node", "vault", "admin", "clients", "contracts", "shared", "web-page", "deploy"] {
+        for repo in ["core", "kfe", "node", "vault", "admin", "clients", "contracts", "shared", "rails", "deploy"] {
             let raw = repo.as_bytes();
             let original = receipt(repo, raw);
             assert_eq!(store.put_git_archive(original.clone(), raw), Err(GitArchiveError::ApprovalRequired));
