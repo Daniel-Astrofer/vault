@@ -55,6 +55,11 @@ Once a CRQC is available, an adversary gains:
 
 ## 2. Protected Assets
 
+Release compatibility observations and source archives are separate from the
+release-manifest signature goal below. Their current implementation reports
+missing production approval/build/sequence verification as unknown and never
+activates a signer. See the [release evidence threat model](RELEASE_EVIDENCE_THREAT_MODEL.md).
+
 | Asset | Algorithm | PQ Protection | Sensitivity |
 |---|---|---|---|
 | **FROST shares** (secp256k1) | FROST-256 | ML-KEM-768 sealed envelope | Secret key material; total fund loss if exposed |

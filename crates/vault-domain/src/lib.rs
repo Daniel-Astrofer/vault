@@ -38,6 +38,10 @@ pub use quorum::run_dkg;
 pub use release::{
     lab_rebuild_binary_hash, AllowlistEntry, ContentHash, ReleaseCandidate, ReleasePhase, ReleasePolicy,
 };
+pub use release::{
+    validate_release_id, SourceArchiveReceiptV1, SourceBundleV1, SourceFileV1, SOURCE_BUNDLE_MAX_BYTES,
+    SOURCE_BUNDLE_MAX_CONTENT_BYTES, SOURCE_BUNDLE_MAX_FILES,
+};
 pub use release::{DrillReport, QuantumMigrationConfig, QuantumState, SweepReport, TransitionAuth, UtxoRecord};
 pub use signing::{
     derive_nonce, eval_poly, field_add, field_mul, interpolate_secret, lab_random_u64, nonce_commitment,

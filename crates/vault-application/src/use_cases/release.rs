@@ -35,8 +35,10 @@ impl ProposeRelease {
         let hs = ContentHash::from_bytes(source);
         let hb = lab_rebuild_binary_hash(source);
         self.blobs.put(&hs, source)?;
-        let binary = format!("lab-bin|{}", hs.as_str());
-        self.blobs.put(&hb, binary.as_bytes())?;
+        // Preserve the lab fingerprint while storing bytes that actually hash to Hb.
+        let mut binary = b"lab-rebuild-v1|".to_vec();
+        binary.extend_from_slice(source);
+        self.blobs.put(&hb, &binary)?;
 
         let constitution = self.ledger.constitution()?;
         let policy = self.releases.policy()?;

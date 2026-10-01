@@ -1,14 +1,14 @@
 //! Admin API router — separate from the main HTTP vault surface.
 //!
-//! Serves read-only admin endpoints over a Unix domain socket (production)
-//! or optionally TCP with mTLS.
+//! Serves admin reads and versioned inert source archival over a Unix domain
+//! socket. The optional existing TCP listener does not yet enforce mTLS.
 //!
 //! # Security
 //! - All responses are scrubbed of shares, nonces, passphrases, seeds,
 //!   private keys, and private certificates.
 //! - Production builds (`feature = "production"`) reject `dealer_lab` features.
 //! - Server-side authorization validates that the caller has admin access.
-//! - Request ID is generated for audit trail on every request.
+//! - Legacy reads generate request IDs; evidence uses explicit release bindings.
 
 use std::sync::Arc;
 
@@ -51,6 +51,12 @@ pub fn build_admin_router(runtime: Arc<VaultRuntime>) -> Router {
         )
         .to_string();
     let service = AdminService::new(runtime);
+    let evidence_service = service.clone();
+    let evidence = super::source_evidence::source_evidence_router(super::source_evidence::SourceEvidenceState {
+        archives: service.runtime().release_mesh.clone(),
+        clock: Arc::new(crate::adapters::SystemClock),
+        context: Arc::new(move || evidence_service.release_compatibility_context()),
+    });
     let state = AdminApiState { service, auth_token };
 
     let protected = Router::new()
@@ -60,24 +66,27 @@ pub fn build_admin_router(runtime: Arc<VaultRuntime>) -> Router {
         .route("/admin/ceremony", get(admin_ceremony_handler))
         .route("/admin/compatibility", get(admin_compatibility_handler))
         .route("/admin/audit-reference", get(admin_audit_reference_handler))
-        .route_layer(from_fn_with_state(state.clone(), require_admin_auth_mw));
+        .merge(evidence);
 
-    Router::new()
-        .merge(protected)
-        .layer(from_fn(admin_security_headers_mw))
+    protect_admin_routes(protected, state.auth_token.clone())
         .layer(axum::extract::DefaultBodyLimit::max(64 * 1024))
         .with_state(state)
 }
 
+pub(super) fn protect_admin_routes<S: Clone + Send + Sync + 'static>(routes: Router<S>, token: String) -> Router<S> {
+    assert!(!token.is_empty(), "admin token must not be empty");
+    routes.route_layer(from_fn_with_state(token, require_admin_auth_mw)).layer(from_fn(admin_security_headers_mw))
+}
+
 /// Auth middleware for admin routes.
 async fn require_admin_auth_mw(
-    State(state): State<AdminApiState>,
+    State(auth_token): State<String>,
     headers: HeaderMap,
     request: Request,
     next: Next,
 ) -> Result<Response, (StatusCode, Json<serde_json::Value>)> {
     match headers.get(ADMIN_AUTH_HEADER).and_then(|v| v.to_str().ok()) {
-        Some(token) if token == state.auth_token => Ok(next.run(request).await),
+        Some(token) if admin_token_matches(token, &auth_token) => Ok(next.run(request).await),
         Some(_) | None => {
             eprintln!("unauthorized admin API request (missing or invalid auth token)");
             Err((
@@ -86,6 +95,12 @@ async fn require_admin_auth_mw(
             ))
         }
     }
+}
+
+fn admin_token_matches(provided: &str, expected: &str) -> bool {
+    use sha2::{Digest, Sha256};
+    use subtle::ConstantTimeEq;
+    Sha256::digest(provided.as_bytes()).ct_eq(&Sha256::digest(expected.as_bytes())).into()
 }
 
 /// Security headers middleware for admin responses.
@@ -208,8 +223,7 @@ pub async fn spawn_admin_unix_socket(runtime: Arc<VaultRuntime>, socket_path: &s
                         let svc = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
                             let router = router.clone();
                             async move {
-                                let (parts, _body) = req.into_parts();
-                                let axum_req = axum::http::Request::from_parts(parts, Body::from(&b""[..]));
+                                let axum_req = req.map(Body::new);
                                 Ok::<_, std::convert::Infallible>(router.oneshot(axum_req).await.unwrap())
                             }
                         });

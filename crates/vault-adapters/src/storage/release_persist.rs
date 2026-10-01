@@ -6,40 +6,44 @@
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use super::durable_fs::atomic_write_fsync;
 use super::release_memory::InMemoryReleaseMesh;
+use super::source_archive::{put_immutable, read_bounded_regular, reject_link_components};
 use super::sync_util::lock_mutex;
 use crate::application::ports::{BlobStorePort, ReleaseStorePort};
 use crate::domain::{AllowlistEntry, ContentHash, DomainError, ReleaseCandidate, ReleasePhase, ReleasePolicy};
 
 pub struct PersistedReleaseMesh {
     meta_path: PathBuf,
-    blobs_dir: PathBuf,
+    pub(crate) blobs_dir: PathBuf,
+    pub(crate) archives_dir: PathBuf,
+    pub(crate) archive_writes: Mutex<()>,
     inner: InMemoryReleaseMesh,
 }
 
 impl PersistedReleaseMesh {
+    pub const CURRENT_STORAGE_VERSION: u16 = 1;
+
     pub fn open(root: impl Into<PathBuf>, policy: ReleasePolicy) -> Result<Self, DomainError> {
         let root = root.into();
+        reject_link_components(&root)?;
         let meta_path = root.join("release_meta.json");
+        reject_link_components(&meta_path)?;
         let blobs_dir = root.join("blobs");
+        let archives_dir = root.join("source_archives_v1");
+        reject_link_components(&blobs_dir)?;
+        reject_link_components(&archives_dir)?;
         fs::create_dir_all(&blobs_dir).map_err(|e| DomainError::ThresholdError(format!("release mkdir: {e}")))?;
+        fs::create_dir_all(&archives_dir).map_err(|e| DomainError::InvalidRelease(format!("archive mkdir: {e}")))?;
         let mesh = InMemoryReleaseMesh::new(policy);
         if meta_path.exists() {
             hydrate_meta(&meta_path, &mesh)?;
         }
-        if let Ok(entries) = fs::read_dir(&blobs_dir) {
-            for ent in entries.flatten() {
-                let name = ent.file_name().to_string_lossy().to_string();
-                if let Ok(bytes) = fs::read(ent.path()) {
-                    if let Ok(hash) = ContentHash::parse(&name) {
-                        let _ = mesh.put(&hash, &bytes);
-                    }
-                }
-            }
-        }
-        Ok(Self { meta_path, blobs_dir, inner: mesh })
+        // Blobs are read lazily with bounds and integrity verification; never
+        // follow arbitrary directory entries or preload unbounded content.
+        Ok(Self { meta_path, blobs_dir, archives_dir, archive_writes: Mutex::new(()), inner: mesh })
     }
 
     fn persist_meta(&self) -> Result<(), DomainError> {
@@ -75,18 +79,29 @@ impl PersistedReleaseMesh {
 
     fn persist_blob(&self, hash: &ContentHash, bytes: &[u8]) -> Result<(), DomainError> {
         let path = self.blobs_dir.join(hash.as_str());
-        atomic_write_fsync(&path, bytes).map_err(|e| DomainError::ThresholdError(format!("release blob persist: {e}")))
+        put_immutable(&path, bytes, crate::domain::SOURCE_BUNDLE_MAX_BYTES)
     }
 }
 
 impl BlobStorePort for PersistedReleaseMesh {
     fn put(&self, hash: &ContentHash, bytes: &[u8]) -> Result<(), DomainError> {
-        self.inner.put(hash, bytes)?;
+        if ContentHash::from_bytes(bytes) != *hash {
+            return Err(DomainError::MeasurementMismatch);
+        }
+        let _guard = lock_mutex(&self.archive_writes, "release blobs")?;
         self.persist_blob(hash, bytes)
     }
 
     fn get(&self, hash: &ContentHash) -> Result<Vec<u8>, DomainError> {
-        self.inner.get(hash)
+        let path = self.blobs_dir.join(hash.as_str());
+        if !path.try_exists().map_err(|e| DomainError::InvalidRelease(e.to_string()))? {
+            return Err(DomainError::UnknownBlob(hash.as_str().into()));
+        }
+        let bytes = read_bounded_regular(&path, crate::domain::SOURCE_BUNDLE_MAX_BYTES)?;
+        if ContentHash::from_bytes(&bytes) != *hash {
+            return Err(DomainError::MeasurementMismatch);
+        }
+        Ok(bytes)
     }
 }
 
@@ -153,9 +168,12 @@ fn candidate_json(c: &ReleaseCandidate) -> String {
 }
 
 fn hydrate_meta(path: &Path, mesh: &InMemoryReleaseMesh) -> Result<(), DomainError> {
-    let raw = fs::read_to_string(path).map_err(|e| DomainError::ThresholdError(format!("release meta read: {e}")))?;
+    let raw = read_bounded_regular(path, 16 * 1024 * 1024)?;
     let v: serde_json::Value =
-        serde_json::from_str(&raw).map_err(|e| DomainError::ThresholdError(format!("release meta json: {e}")))?;
+        serde_json::from_slice(&raw).map_err(|e| DomainError::ThresholdError(format!("release meta json: {e}")))?;
+    if v["version"].as_u64() != Some(PersistedReleaseMesh::CURRENT_STORAGE_VERSION as u64) {
+        return Err(DomainError::InvalidRelease("unsupported release storage version".into()));
+    }
     if let Some(arr) = v["candidates"].as_array() {
         for c in arr {
             let id = c["id"].as_str().unwrap_or("").to_string();

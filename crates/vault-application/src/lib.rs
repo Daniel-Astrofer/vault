@@ -3,6 +3,7 @@
 pub mod ports;
 mod use_cases;
 
+pub use ports::SourceArchiveStorePort;
 pub use ports::{
     bind_session_to_intent, AntiNoncePort, AttestationPort, BlobStorePort, BucketLedgerPort, ClockPort,
     DailyRotationPort, DkgPort, EconomyPort, HybridEnvelopePort, KeyLifecyclePort, LedgerPort, PeerDirectoryPort,
@@ -19,3 +20,4 @@ pub use use_cases::{
     ActivateRelease, CosignRelease, GetAllowlist, MutableOnlineCount, NoopShareMigration, OnlineStatusPort,
     ProposeRelease, RebuildRelease, ShareMigrationPort, SignMessage, StaticOnlineCount,
 };
+pub use use_cases::{GetReleaseCompatibility, IngestSourceArchive, ReleaseCompatibilityContext};

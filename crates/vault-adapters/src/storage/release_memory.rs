@@ -37,7 +37,13 @@ impl InMemoryReleaseMesh {
 
 impl BlobStorePort for InMemoryReleaseMesh {
     fn put(&self, hash: &ContentHash, bytes: &[u8]) -> Result<(), DomainError> {
+        if bytes.len() > crate::domain::SOURCE_BUNDLE_MAX_BYTES || ContentHash::from_bytes(bytes) != *hash {
+            return Err(DomainError::MeasurementMismatch);
+        }
         let mut g = lock_mutex(&self.inner, "release")?;
+        if let Some(existing) = g.blobs.get(hash.as_str()) {
+            return if existing == bytes { Ok(()) } else { Err(DomainError::MeasurementMismatch) };
+        }
         g.blobs.insert(hash.as_str().to_string(), bytes.to_vec());
         Ok(())
     }

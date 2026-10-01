@@ -11,6 +11,7 @@ mod share_aead;
 mod share_tee;
 mod share_tpm;
 mod share_tpm_tss;
+mod source_archive;
 mod sync_util;
 pub use bucket_memory::*;
 pub use durable_fs::*;

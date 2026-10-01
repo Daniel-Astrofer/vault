@@ -50,6 +50,19 @@ pub trait BlobStorePort: Send + Sync {
     fn get(&self, hash: &ContentHash) -> Result<Vec<u8>, DomainError>;
 }
 
+/// Immutable source evidence, independent of release allowlisting and custody.
+pub trait SourceArchiveStorePort: Send + Sync {
+    fn put_source_archive(
+        &self,
+        receipt: vault_domain::SourceArchiveReceiptV1,
+        canonical: &[u8],
+    ) -> Result<vault_domain::SourceArchiveReceiptV1, DomainError>;
+    fn get_source_archive(
+        &self,
+        release_id: &str,
+    ) -> Result<(vault_domain::SourceArchiveReceiptV1, Vec<u8>), DomainError>;
+}
+
 /// Release candidate + allowlist state shared across vaults in the lab mesh.
 pub trait ReleaseStorePort: Send + Sync {
     fn policy(&self) -> Result<ReleasePolicy, DomainError>;

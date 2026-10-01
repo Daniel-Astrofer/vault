@@ -10,6 +10,7 @@ mod quantum_migration;
 mod release;
 mod share_migration;
 mod signing;
+mod source_evidence;
 
 pub use economy::*;
 pub use health::*;
@@ -22,3 +23,4 @@ pub use quantum_migration::*;
 pub use release::*;
 pub use share_migration::*;
 pub use signing::*;
+pub use source_evidence::*;

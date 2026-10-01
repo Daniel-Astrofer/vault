@@ -149,6 +149,29 @@ impl AdminService {
         })
     }
 
+    pub fn release_compatibility_context(&self) -> crate::application::ReleaseCompatibilityContext {
+        use crate::application::LedgerPort;
+        let config = &self.runtime.config;
+        let constitution = self.runtime.ledger.constitution().ok();
+        crate::application::ReleaseCompatibilityContext {
+            protocol_version: constitution.as_ref().map(|c| c.format_versions.current_protocol_version).unwrap_or(0),
+            storage_version: crate::adapters::PersistedReleaseMesh::CURRENT_STORAGE_VERSION,
+            share_storage_version: constitution.as_ref().map(|c| c.format_versions.share_envelope).unwrap_or(0),
+            production_safe: cfg!(feature = "production")
+                && !cfg!(feature = "dealer_lab")
+                && matches!(config.ceremony_mode, crate::bootstrap::CeremonyMode::Production)
+                && matches!(config.dkg_mode, crate::bootstrap::DkgMode::DistributedWire)
+                && config.hardened
+                && !config.dealer_requested
+                && !config.attestation_staging_stub
+                && !config.attestation_mode.is_lab_only()
+                && !config.lab_timelock_env_set
+                && config.lab_timelock_scale == 1,
+            features: build_feature_list().into_iter().map(str::to_string).collect(),
+            observed_at_secs: SystemTime::now().duration_since(UNIX_EPOCH).map(|t| t.as_secs()).unwrap_or(0),
+        }
+    }
+
     /// Audit reference and request ID.
     ///
     /// Generates an opaque audit event identifier tied to the caller's
