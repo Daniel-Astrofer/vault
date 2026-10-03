@@ -31,8 +31,12 @@ fn local_target(raw: &str) -> Result<(reqwest::Url, String, SocketAddr), ()> {
 }
 
 fn locally_ready(body: &[u8]) -> Result<(), ()> {
-    let value: serde_json::Value = serde_json::from_slice(body).map_err(|_| ())?;
-    if value.get("local_ready").and_then(|v| v.as_bool()) != Some(true) {
+    #[derive(serde::Deserialize)]
+    struct LocalHealth {
+        local_ready: bool,
+    }
+    let value: LocalHealth = serde_json::from_slice(body).map_err(|_| ())?;
+    if !value.local_ready {
         return Err(());
     }
     Ok(())
@@ -95,6 +99,17 @@ mod tests {
     fn local_readiness_is_not_financial_authority() {
         assert!(locally_ready(br#"{"local_ready":true,"financial_ready":false}"#).is_ok());
         for body in [br#"{"local_ready":false}"#.as_slice(), br#"{"local_ready":"true"}"#, br#"{}"#, b"invalid"] {
+            assert!(locally_ready(body).is_err());
+        }
+    }
+    #[test]
+    fn contradictory_duplicate_readiness_is_rejected() {
+        for body in [
+            br#"{"local_ready":false,"local_ready":true}"#.as_slice(),
+            br#"{"local_ready":true,"local_ready":false}"#,
+            br#"{"local_ready":true,"local_ready":true}"#,
+            br#"{"local_ready":true} {"local_ready":true}"#,
+        ] {
             assert!(locally_ready(body).is_err());
         }
     }

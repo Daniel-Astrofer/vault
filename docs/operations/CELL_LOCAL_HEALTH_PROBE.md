@@ -17,7 +17,10 @@ retains hostname verification, disables proxy/redirect use, and resolves the URL
 hostname to IPv4 loopback. It cannot probe a remote host; the hostname is retained
 for TLS identity verification. Connect timeout is two seconds, request timeout
 four seconds, and collected response bytes are capped at 4096. Only HTTP 200
-with boolean `local_ready: true` succeeds. `financial_ready` does not authorize
+with boolean `local_ready: true` succeeds.
+Duplicate `local_ready` fields and concatenated JSON responses are rejected,
+including duplicate fields whose values agree; missing/string readiness fails.
+`financial_ready` does not authorize
 anything here and is not required for local Kubernetes bootstrap readiness.
 
 Do not put certificate values, private keys or passwords into argv or logs.
