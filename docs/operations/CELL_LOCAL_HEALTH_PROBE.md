@@ -29,9 +29,15 @@ remains an explicit external ceremony. No TLS bypass is available.
 
 ## Qualification remaining
 
-Two unit tests validate URL restrictions and local-vs-financial readiness; these
-are not a real mTLS test. Certificate rejection, hostname mismatch, redirects,
-timeout and actual executable/OCI behavior require integration qualification
-before changing production probes. The existing health endpoint itself may
+Three unit tests validate URL restrictions, local-vs-financial readiness and
+duplicate readiness rejection. After building the application binary, run
+`python3 scripts/lab/cell_health_probe_test.py` for actual executable/mTLS checks.
+The loopback server requires a client certificate; independently generated
+synthetic CAs/leaves verify success and rejection of wrong CA, hostname/client,
+false/duplicate readiness, oversized responses and redirects. Temporary test
+keys are deleted with the private fixture directory; none enter Git.
+This does not start a Vault runtime or qualify its actual health endpoint, OCI
+image or Kubernetes exec probe. Timeout and full runtime/OCI behavior still
+require qualification before changing production probes. The health endpoint may
 perform peer liveness checks; this command does not change server behavior.
 No manifests have been switched and no signer or live Vault was started.
