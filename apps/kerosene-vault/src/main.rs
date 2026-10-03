@@ -20,9 +20,14 @@ async fn main() {
         let code = if args == ["--health-probe"] {
             match health_probe::run().await {
                 Ok(()) => 0,
-                Err(()) => { eprintln!("Vault authenticated local health probe failed"); 1 }
+                Err(()) => {
+                    eprintln!("Vault authenticated local health probe failed");
+                    1
+                }
             }
-        } else { 2 };
+        } else {
+            2
+        };
         std::process::exit(code);
     }
     let config = match VaultConfig::from_env() {

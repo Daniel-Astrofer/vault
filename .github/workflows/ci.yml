@@ -23,3 +23,18 @@ jobs:
 
   security:
     uses: Daniel-Astrofer/.github/.github/workflows/security-scan.yml@2552ff2125c2d72accebe93804b8e139a52ded13
+
+  cell-health-probe:
+    name: Actual executable authenticated local health probe
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Select verified Rust toolchain
+        run: rustup toolchain install 1.97.0 --profile minimal
+      - name: Test and build production-default application binary
+        run: |
+          cargo +1.97.0 test --locked -p kerosene-vault-app --bin kerosene-vault
+          cargo +1.97.0 build --locked -p kerosene-vault-app --bin kerosene-vault
+      - name: Verify actual binary with synthetic mutual TLS
+        run: python3 scripts/lab/cell_health_probe_test.py

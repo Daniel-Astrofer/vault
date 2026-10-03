@@ -47,3 +47,8 @@ image or Kubernetes exec probe. Full runtime/OCI behavior still
 require qualification before changing production probes. The health endpoint may
 perform peer liveness checks; this command does not change server behavior.
 No manifests have been switched and no signer or live Vault was started.
+
+The dedicated `cell-health-probe` CI job builds/tests the executable package
+with locked dependencies and Rust 1.97.0, then runs this synthetic mTLS fixture.
+It never constructs a production Vault runtime or publishes/activates a signer.
+Local fixture and formatting checks passed; hosted CI execution is not claimed.
