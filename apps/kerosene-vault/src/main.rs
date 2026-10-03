@@ -11,9 +11,20 @@ use std::sync::Arc;
 use axum_server::tls_rustls::RustlsAcceptor;
 use vault_core::adapters::{build_mtls_server_config, build_router, PeerCertAcceptor};
 use vault_core::bootstrap::{VaultConfig, VaultRuntime};
+mod health_probe;
 
 #[tokio::main]
 async fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|arg| arg.starts_with("--health-probe")) {
+        let code = if args == ["--health-probe"] {
+            match health_probe::run().await {
+                Ok(()) => 0,
+                Err(()) => { eprintln!("Vault authenticated local health probe failed"); 1 }
+            }
+        } else { 2 };
+        std::process::exit(code);
+    }
     let config = match VaultConfig::from_env() {
         Ok(c) => c,
         Err(e) => {
