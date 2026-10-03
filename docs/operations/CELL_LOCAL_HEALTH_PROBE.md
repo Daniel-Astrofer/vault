@@ -36,7 +36,10 @@ remains an explicit external ceremony. No TLS bypass is available.
 Three unit tests validate URL restrictions, local-vs-financial readiness and
 duplicate readiness rejection. After building the application binary, run
 `python3 scripts/lab/cell_health_probe_test.py` for actual executable/mTLS checks.
-The loopback server requires a client certificate; independently generated
+The loopback server requires a client certificate.
+An explicit uncredentialed TLS client is rejected before reaching the HTTP
+handler, providing a negative control for mandatory certificate enforcement.
+Independently generated
 synthetic CAs/leaves verify success and rejection of wrong CA, hostname/client,
 false/duplicate readiness, oversized responses and redirects. A server that
 sends headers but stalls the body is rejected by the four-second request timeout.

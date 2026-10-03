@@ -4,6 +4,7 @@ import http.server
 import os
 from pathlib import Path
 import ssl
+import socket
 import subprocess
 import tempfile
 import threading
@@ -79,6 +80,18 @@ def main():
             assert result.stderr == (b"" if expected == 0 else b"Vault authenticated local health probe failed\n")
 
         try:
+            uncredentialed = ssl.create_default_context(cafile=str(root / "server-ca.crt"))
+            before = Handler.calls
+            rejected = False
+            try:
+                with socket.create_connection(("127.0.0.1", server.server_port), timeout=3) as tcp:
+                    with uncredentialed.wrap_socket(tcp, server_hostname="localhost") as tls:
+                        tls.sendall(b"GET /v1/health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+                        response = tls.recv(4096)
+                        rejected = not response
+            except ssl.SSLError:
+                rejected = True
+            assert rejected and Handler.calls == before, "fixture accepted a client without a certificate"
             probe(0)
             probe(1, {"VAULT_TLS_CLIENT_CA_PATH": str(root / "wrong-ca.crt")})
             probe(1, {"VAULT_HEALTH_PROBE_URL": f"https://wrong.example:{server.server_port}/v1/health"})
