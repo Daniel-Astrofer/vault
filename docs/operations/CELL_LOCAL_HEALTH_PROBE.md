@@ -14,8 +14,12 @@ Required external inputs:
 
 Each PEM read is capped at 64 KiB. The client uses only the specified CA bundle,
 retains hostname verification, disables proxy/redirect use, and resolves the URL
-hostname to IPv4 loopback. It cannot probe a remote host; the hostname is retained
-for TLS identity verification. Connect timeout is two seconds, request timeout
+hostname to IPv4 loopback. It cannot probe a remote host. The hostname is retained
+for TLS identity verification.
+IP literals (including normalized numeric IPv4 and IPv6) are rejected because
+HTTP connectors may bypass DNS overrides for them. Use the certificate's DNS
+hostname, never an IP URL.
+Connect timeout is two seconds, request timeout
 four seconds, and collected response bytes are capped at 4096. Only HTTP 200
 with boolean `local_ready: true` succeeds.
 Duplicate `local_ready` fields and concatenated JSON responses are rejected,

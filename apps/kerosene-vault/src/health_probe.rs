@@ -26,6 +26,11 @@ fn local_target(raw: &str) -> Result<(reqwest::Url, String, SocketAddr), ()> {
         return Err(());
     }
     let host = url.host_str().ok_or(())?.to_owned();
+    // IP literals bypass DNS overrides. Reject them rather than permit a remote
+    // target or silently change the certificate identity to a different IP.
+    if host.trim_matches(['[', ']']).parse::<std::net::IpAddr>().is_ok() {
+        return Err(());
+    }
     let port = url.port_or_known_default().ok_or(())?;
     Ok((url, host, SocketAddr::from(([127, 0, 0, 1], port))))
 }
@@ -88,6 +93,11 @@ mod tests {
             "https://localhost/",
             "https://localhost/v1/health?x=1",
             "https://localhost/v1/health#x",
+            "https://192.0.2.1/v1/health",
+            "https://127.0.0.1/v1/health",
+            "https://[::1]/v1/health",
+            "https://[2001:db8::1]/v1/health",
+            "https://2130706433/v1/health",
         ] {
             assert!(local_target(raw).is_err());
         }
