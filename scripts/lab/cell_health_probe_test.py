@@ -80,6 +80,12 @@ def main():
             assert result.stderr == (b"" if expected == 0 else b"Vault authenticated local health probe failed\n")
 
         try:
+            fifo = root / "blocked-cert.fifo"
+            os.mkfifo(fifo, 0o600)
+            started = time.monotonic()
+            probe(1, {"VAULT_TLS_CLIENT_CERT_PATH": str(fifo)})
+            assert time.monotonic() - started < 2, "probe blocked opening a FIFO certificate"
+            probe(1, {"VAULT_TLS_CLIENT_CERT_PATH": str(root)})
             uncredentialed = ssl.create_default_context(cafile=str(root / "server-ca.crt"))
             before = Handler.calls
             rejected = False

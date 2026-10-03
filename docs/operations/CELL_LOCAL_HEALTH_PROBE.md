@@ -13,6 +13,10 @@ Required external inputs:
   `VAULT_TLS_CLIENT_CA_PATH`: absolute paths to existing mounted PEM files.
 
 Each PEM read is capped at 64 KiB. The client uses only the specified CA bundle,
+Certificate paths must resolve to regular files; directories/devices/FIFOs fail
+before opening. Kubernetes projected Secret symlinks remain supported. This
+metadata check is not protection against a hostile mount replacing files between
+inspection/open; trusted read-only credential mounts are still required.
 retains hostname verification, disables proxy/redirect use, and resolves the URL
 hostname to IPv4 loopback. It cannot probe a remote host. The hostname is retained
 for TLS identity verification.

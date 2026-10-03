@@ -6,6 +6,11 @@ fn pem(name: &str) -> Result<Vec<u8>, ()> {
     if !std::path::Path::new(&path).is_absolute() {
         return Err(());
     }
+    // Mounted Kubernetes Secret symlinks resolve to regular files. A FIFO or
+    // device can block before the HTTP request timeout has started.
+    if !std::fs::metadata(&path).map_err(|_| ())?.is_file() {
+        return Err(());
+    }
     let mut bytes = Vec::new();
     std::fs::File::open(path).map_err(|_| ())?.take(65537).read_to_end(&mut bytes).map_err(|_| ())?;
     if bytes.is_empty() || bytes.len() > 65536 {
