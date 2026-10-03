@@ -7,6 +7,7 @@ import ssl
 import subprocess
 import tempfile
 import threading
+import time
 
 ROOT = Path(__file__).resolve().parents[2]
 BINARY = ROOT / "target/debug/kerosene-vault"
@@ -38,6 +39,7 @@ def main():
             body = b'{"local_ready":true,"financial_ready":false}'
             status = 200
             calls = 0
+            stall_body = False
 
             def do_GET(self):
                 type(self).calls += 1
@@ -45,7 +47,12 @@ def main():
                 self.send_header("Content-Length", str(len(type(self).body)))
                 self.send_header("Location", "https://localhost/v1/health")
                 self.end_headers()
-                self.wfile.write(type(self).body)
+                if type(self).stall_body:
+                    time.sleep(5)
+                try:
+                    self.wfile.write(type(self).body)
+                except (BrokenPipeError, ConnectionResetError, ssl.SSLError):
+                    pass  # Expected when the bounded probe closes a stalled response.
 
             def log_message(self, *_):
                 pass
@@ -88,7 +95,13 @@ def main():
             before = Handler.calls
             probe(1)
             assert Handler.calls == before + 1, "probe followed a redirect"
-            print("PASS: actual Vault binary: mTLS success, wrong CA/hostname/client rejection, readiness, duplicates, size and redirect checks")
+            Handler.status = 200
+            Handler.stall_body = True
+            started = time.monotonic()
+            probe(1)
+            elapsed = time.monotonic() - started
+            assert 3 <= elapsed < 5, ("response-body timeout not enforced", elapsed)
+            print("PASS: actual Vault binary: mTLS, CA/hostname/client rejection, readiness, duplicate/size/redirect and stalled-body timeout checks")
         finally:
             server.shutdown()
             server.server_close()
