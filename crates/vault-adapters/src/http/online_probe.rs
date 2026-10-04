@@ -1,12 +1,15 @@
 use std::net::{SocketAddr, ToSocketAddrs};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
 use crate::adapters::PeerHttpSettings;
 use crate::application::ports::PeerDirectoryPort;
 use crate::application::OnlineStatusPort;
+use crate::{build_mtls_rustls_client_config, TlsPeerVerifyPolicy};
 
-/// Honest online count for fail-stop: self + peers that answer `/v1/health`.
+/// Honest online count for fail-stop: self + peers that answer the dedicated
+/// non-recursive local-health endpoint over the configured mesh TLS transport.
 ///
 /// Unreachable / unknown peers are **not** counted (fail-closed). Does not
 /// invent liveness from `VAULT_ONLINE_COUNT` alone when peers are configured.
@@ -19,6 +22,7 @@ pub struct ProbedOnlineCount {
     max_online: Option<usize>,
     /// When true (lab only), skip probing and report `lab_static` — tests only.
     lab_static: Option<usize>,
+    tls: Option<rustls::ClientConfig>,
 }
 
 impl ProbedOnlineCount {
@@ -29,7 +33,21 @@ impl ProbedOnlineCount {
         auth_token: Option<String>,
         max_online: Option<usize>,
     ) -> Self {
-        Self { peers, peer_health_urls, peer_http, auth_token, max_online, lab_static: None }
+        Self { peers, peer_health_urls, peer_http, auth_token, max_online, lab_static: None, tls: None }
+    }
+
+    pub fn new_mtls(
+        peers: Arc<dyn PeerDirectoryPort>,
+        peer_health_urls: Vec<String>,
+        peer_http: PeerHttpSettings,
+        max_online: Option<usize>,
+        client_cert_path: &Path,
+        client_key_path: &Path,
+        ca_path: &Path,
+        verify: &TlsPeerVerifyPolicy,
+    ) -> Result<Self, crate::domain::DomainError> {
+        let tls = build_mtls_rustls_client_config(client_cert_path, client_key_path, ca_path, verify)?;
+        Ok(Self { peers, peer_health_urls, peer_http, auth_token: None, max_online, lab_static: None, tls: Some(tls) })
     }
 
     /// Lab / unit harness: fixed count without probing (never used in hardened boot).
@@ -41,6 +59,7 @@ impl ProbedOnlineCount {
             auth_token: None,
             max_online: None,
             lab_static: Some(count),
+            tls: None,
         }
     }
 
@@ -49,7 +68,9 @@ impl ProbedOnlineCount {
             Ok(b) => b,
             Err(_) => return false,
         };
-        builder = builder.timeout(Duration::from_millis(self.peer_http.connect_timeout.as_millis().min(500) as u64));
+        if let Some(tls) = self.tls.clone() {
+            builder = builder.use_preconfigured_tls(tls);
+        }
         let Ok(client) = builder.build() else {
             return false;
         };

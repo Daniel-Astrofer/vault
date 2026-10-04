@@ -325,16 +325,21 @@ impl VaultRuntime {
             peer_bases.push((id.clone(), base));
         }
         let peer_count = peer_bases.len();
-        // High #7: probe peer /v1/health; unreachable peers do not count as online.
+        // Probe a non-recursive local-ready endpoint. Probing /v1/health here
+        // would recursively ask every peer to calculate financial readiness.
         if !(config.online_static || (matches!(config.ceremony_mode, CeremonyMode::Lab) && peer_count == 0)) {
-            let peer_health: Vec<String> = peer_bases.iter().map(|(_, b)| format!("{b}/v1/health")).collect();
-            online = Arc::new(ProbedOnlineCount::new(
+            let peer_health: Vec<String> = peer_bases.iter().map(|(_, b)| format!("{b}/v1/local-health")).collect();
+            let (client_cert, client_key, ca) = config.require_mtls_client_identity()?;
+            online = Arc::new(ProbedOnlineCount::new_mtls(
                 peers.clone(),
                 peer_health,
                 config.peer_http.clone(),
-                None,
                 config.online_count,
-            ));
+                std::path::Path::new(client_cert),
+                std::path::Path::new(client_key),
+                std::path::Path::new(ca),
+                &config.tls_verify_policy,
+            )?);
             sign_message = SignMessage::new(threshold.clone(), online.clone());
         }
         let peer_prepare: Vec<String> = peer_bases.iter().map(|(_, b)| format!("{b}/v1/anti-nonce/prepare")).collect();

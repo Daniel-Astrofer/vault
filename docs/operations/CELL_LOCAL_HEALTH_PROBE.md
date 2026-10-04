@@ -8,7 +8,7 @@ exit 2; probe failures exit 1 with a generic message; success exits 0 silently.
 Required external inputs:
 
 - `VAULT_HEALTH_PROBE_URL`: HTTPS URL with the certificate's hostname, explicit
-  service port as needed, and exactly `/v1/health`; no credentials/query/fragment.
+  service port as needed, and exactly `/v1/local-health`; no credentials/query/fragment.
 - `VAULT_TLS_CLIENT_CERT_PATH`, `VAULT_TLS_CLIENT_KEY_PATH` and
   `VAULT_TLS_CLIENT_CA_PATH`: absolute paths to existing mounted PEM files.
 

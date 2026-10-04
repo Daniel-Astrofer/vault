@@ -92,6 +92,7 @@ pub fn build_router(runtime: Arc<VaultRuntime>) -> Router {
 
     Router::new()
         .route("/v1/health", get(v1_health))
+        .route("/v1/local-health", get(v1_local_health))
         .route("/v1/metrics", get(v1_metrics))
         .route("/", get(v1_health))
         .merge(protected)
@@ -156,6 +157,10 @@ async fn v1_health(State(state): State<AppState>) -> impl IntoResponse {
         Ok(h) => (StatusCode::OK, h.to_public_json()),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, json_err(e)),
     }
+}
+
+async fn v1_local_health() -> impl IntoResponse {
+    (StatusCode::OK, r#"{"local_ready":true}"#)
 }
 
 async fn v1_metrics(State(state): State<AppState>) -> impl IntoResponse {

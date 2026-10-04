@@ -26,7 +26,7 @@ fn local_target(raw: &str) -> Result<(reqwest::Url, String, SocketAddr), ()> {
         || url.password().is_some()
         || url.query().is_some()
         || url.fragment().is_some()
-        || url.path() != "/v1/health"
+        || url.path() != "/v1/local-health"
     {
         return Err(());
     }
@@ -93,20 +93,20 @@ mod tests {
     #[test]
     fn target_is_https_fixed_path_no_credentials_or_redirect_inputs() {
         for raw in [
-            "http://localhost/v1/health",
-            "https://user@localhost/v1/health",
+            "http://localhost/v1/local-health",
+            "https://user@localhost/v1/local-health",
             "https://localhost/",
-            "https://localhost/v1/health?x=1",
-            "https://localhost/v1/health#x",
-            "https://192.0.2.1/v1/health",
-            "https://127.0.0.1/v1/health",
-            "https://[::1]/v1/health",
-            "https://[2001:db8::1]/v1/health",
-            "https://2130706433/v1/health",
+            "https://localhost/v1/local-health?x=1",
+            "https://localhost/v1/local-health#x",
+            "https://192.0.2.1/v1/local-health",
+            "https://127.0.0.1/v1/local-health",
+            "https://[::1]/v1/local-health",
+            "https://[2001:db8::1]/v1/local-health",
+            "https://2130706433/v1/local-health",
         ] {
             assert!(local_target(raw).is_err());
         }
-        let (_, host, address) = local_target("https://vault.example:7701/v1/health").unwrap();
+        let (_, host, address) = local_target("https://vault.example:7701/v1/local-health").unwrap();
         assert_eq!(host, "vault.example");
         assert_eq!(address, "127.0.0.1:7701".parse().unwrap());
     }
