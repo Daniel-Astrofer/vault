@@ -16,7 +16,12 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SignerError {
     /// Not enough signing participants.
-    InsufficientShares { have: usize, need: usize },
+    InsufficientShares {
+        /// Number of participants actually supplied.
+        have: usize,
+        /// Threshold required by the key package.
+        need: usize,
+    },
     /// Invalid key package.
     InvalidKeyPackage(String),
     /// Signing round error.
@@ -58,21 +63,28 @@ impl std::error::Error for SignerError {}
 /// Serialized form of signing commitments for IPC transport.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SerializedCommitments {
+    /// FROST participant identifier encoded as bytes.
     pub identifier: Vec<u8>,
+    /// Hiding commitment point encoding from round one.
     pub hiding: Vec<u8>,
+    /// Binding commitment point encoding from round one.
     pub binding: Vec<u8>,
 }
 
 /// Serialized signature share for IPC transport.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SerializedSignatureShare {
+    /// FROST participant identifier encoded as bytes.
     pub identifier: Vec<u8>,
+    /// Participant's round-two signature share encoding.
     pub share: Vec<u8>,
 }
 
 /// Round 1 output: commitments and nonces.
 pub struct Round1Output {
+    /// Public commitments to the signer's one-time nonces.
     pub commitments: SigningCommitments,
+    /// Secret one-time nonces that must be retained only for this session.
     pub nonces: SigningNonces,
 }
 
@@ -90,6 +102,9 @@ pub struct FrostSigner {
 
 impl FrostSigner {
     /// Create a new FROST signer from a key package.
+    ///
+    /// The threshold and participant counts are retained as metadata; this constructor
+    /// does not independently compare them with the key package's group parameters.
     pub fn new(key_package: KeyPackage, min_signers: u16, total_participants: u16) -> Result<Self, SignerError> {
         let identifier = *key_package.identifier();
         Ok(Self { key_package, min_signers, total_participants, identifier })
@@ -137,6 +152,9 @@ impl FrostSigner {
     }
 
     /// Aggregate signature shares into a final signature.
+    ///
+    /// The FROST library validates the signing package, shares, and public package;
+    /// failures are returned as [`SignerError::RoundError`].
     pub fn aggregate(
         commitments: &BTreeMap<Identifier, SigningCommitments>,
         shares: &BTreeMap<Identifier, SignatureShare>,
@@ -151,6 +169,8 @@ impl FrostSigner {
     }
 
     /// Verify the final aggregated signature.
+    ///
+    /// Returns `Ok(false)` when the public-key verification rejects the signature.
     pub fn verify(
         signature: &frost_secp256k1::Signature,
         pubkey_package: &frost_secp256k1::keys::PublicKeyPackage,
@@ -172,16 +192,31 @@ pub mod taproot {
 
     /// Taproot FROST signer state machine.
     pub struct TaprootSigner {
+        /// Taproot FROST key package holding this participant's signing share.
         key_package: KeyPackage,
+        /// Minimum number of signers required by the session policy.
         min_signers: u16,
+        /// Total participant count associated with the key group.
         total_participants: u16,
     }
 
     impl TaprootSigner {
+        /// Create a Taproot signer from its key package and group-size metadata.
         pub fn new(key_package: KeyPackage, min_signers: u16, total_participants: u16) -> Result<Self, SignerError> {
             Ok(Self { key_package, min_signers, total_participants })
         }
 
+        /// Return the configured signing threshold.
+        pub fn min_signers(&self) -> u16 {
+            self.min_signers
+        }
+
+        /// Return the configured total participant count.
+        pub fn total_participants(&self) -> u16 {
+            self.total_participants
+        }
+
+        /// Generate fresh Taproot FROST nonces and their public commitments for round one.
         pub fn preprocess(
             &self,
         ) -> Result<(frost_tr::round1::SigningNonces, frost_tr::round1::SigningCommitments), SignerError> {
@@ -190,6 +225,7 @@ pub mod taproot {
             Ok((nonces, commitments))
         }
 
+        /// Produce this participant's Taproot FROST signature share for the supplied package.
         pub fn sign(
             &self,
             message: &[u8],
@@ -204,6 +240,7 @@ pub mod taproot {
             .map_err(|e| SignerError::RoundError(format!("taproot round2 sign: {e}")))
         }
 
+        /// Aggregate Taproot signature shares into a BIP-340 signature.
         pub fn aggregate(
             commitments: &BTreeMap<frost_tr::Identifier, frost_tr::round1::SigningCommitments>,
             shares: &BTreeMap<frost_tr::Identifier, frost_tr::round2::SignatureShare>,
@@ -214,6 +251,7 @@ pub mod taproot {
                 .map_err(|e| SignerError::RoundError(format!("taproot aggregate: {e}")))
         }
 
+        /// Verify an aggregate Taproot signature against the group's verifying key.
         pub fn verify(
             signature: &frost_tr::Signature,
             pubkey_package: &frost_tr::keys::PublicKeyPackage,
@@ -232,9 +270,8 @@ mod tests {
 
     /// Minimal test using trusted dealer keygen (in-process N-party simulation).
     fn setup_test_signers(n: u16, t: u16) -> Result<(Vec<FrostSigner>, PublicKeyPackage), SignerError> {
-        let mut rng = OsRng;
         let (shares, pubkey_package) =
-            frost_secp256k1::keys::generate_with_dealer(n, t, frost_secp256k1::keys::IdentifierList::Default, &mut rng)
+            frost_secp256k1::keys::generate_with_dealer(n, t, frost_secp256k1::keys::IdentifierList::Default, OsRng)
                 .map_err(|e| SignerError::InvalidKeyPackage(format!("dealer keygen: {e}")))?;
 
         let signers: Result<Vec<_>, _> = shares

@@ -66,6 +66,7 @@ pub struct StubQuantumMigrationController {
 }
 
 impl StubQuantumMigrationController {
+    /// Creates a stub controller initialized from the configuration's current state.
     pub fn new(config: QuantumMigrationConfig) -> Self {
         let state = config.current_state;
         Self { state, config }
@@ -78,22 +79,26 @@ impl StubQuantumMigrationController {
 }
 
 impl QuantumMigrationPort for StubQuantumMigrationController {
+    /// Returns the controller's initial state; this stub never mutates it.
     fn current_state(&self) -> QuantumState {
         self.state
     }
 
+    /// Returns an empty inventory because the UTXO index is not wired in this stub.
     fn utxo_inventory(&self) -> Result<Vec<UtxoRecord>, DomainError> {
         // Stub: returns empty inventory. Real impl queries Bitcoin Core
         // via UTXO index adapter (listunspent + taproot filter).
         Ok(vec![])
     }
 
+    /// Returns no PSBT skeletons because emergency PSBT construction is not implemented.
     fn prepare_emergency_psbts(&self) -> Result<Vec<PsbtSkeleton>, DomainError> {
         // Stub: PSBT construction not implemented.
         // Real impl uses frost_tr_bitcoin adapter + UTXO inventory + fee estimator.
         Ok(vec![])
     }
 
+    /// Validates a transition against placeholder quorum/epoch values without persisting it.
     fn transition_to(&self, new_state: QuantumState, reason: &str) -> Result<(), DomainError> {
         // Stub: validates transition conditions but does not persist.
         // Real impl would: (1) validate monotonic, (2) verify quorum via
@@ -107,6 +112,7 @@ impl QuantumMigrationPort for StubQuantumMigrationController {
         Ok(())
     }
 
+    /// Returns a failed report because migration drill execution is not implemented.
     fn execute_drill(&self) -> Result<DrillReport, DomainError> {
         // Stub: drill not implemented. Real impl:
         // 1. Verify network is testnet (drills forbidden on mainnet).
@@ -118,6 +124,7 @@ impl QuantumMigrationPort for StubQuantumMigrationController {
         Ok(DrillReport::failed(vec!["drill not implemented — stub returns no-op".into()]))
     }
 
+    /// Returns a failed report because emergency sweep execution is not implemented.
     fn sweep_all(&self) -> Result<SweepReport, DomainError> {
         // Stub: sweep not implemented. Real impl:
         // 1. Verify state >= Q4.

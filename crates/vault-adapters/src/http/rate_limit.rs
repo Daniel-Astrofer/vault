@@ -14,20 +14,25 @@ pub struct SlidingWindowLimiter {
 }
 
 impl SlidingWindowLimiter {
+    /// Creates a per-principal sliding-window quota, clamping `limit` to one or more.
     pub fn new(limit: u32, window: Duration) -> Self {
         Self { limit: limit.max(1), window, inner: Mutex::new(HashMap::new()) }
     }
 
-    /// Defaults: 60 events / 60s per principal (auth routes + prepare).
+    /// Creates the default 60-event per 60-second authentication-route quota.
     pub fn auth_defaults() -> Self {
         Self::new(60, Duration::from_secs(60))
     }
 
-    /// Tighter prepare quota (anti-nonce / intent burn griefing).
+    /// Creates the tighter 30-event per 60-second prepare-route quota.
     pub fn prepare_defaults() -> Self {
         Self::new(30, Duration::from_secs(60))
     }
 
+    /// Records one request for `principal`, rejecting it when the current window is full.
+    ///
+    /// Expired timestamps are removed before checking. A rejected request is
+    /// not added to the window; different principal strings have independent quotas.
     pub fn check(&self, principal: &str) -> Result<(), DomainError> {
         let now = Instant::now();
         let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());

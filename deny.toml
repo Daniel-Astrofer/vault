@@ -1,0 +1,11 @@
+[advisories]
+ignore = [
+    "RUSTSEC-2026-0258",
+    "RUSTSEC-2025-0052",
+    "RUSTSEC-2023-0089",
+    "RUSTSEC-2024-0384",
+    "RUSTSEC-2025-0134",
+]
+
+[sources]
+allow-git = ["https://github.com/Daniel-Astrofer/kerosene-contracts.git"]

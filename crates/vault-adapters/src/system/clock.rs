@@ -2,6 +2,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::application::ClockPort;
 
+/// System wall-clock provider used by runtime adapters.
 pub struct SystemClock;
 
 impl ClockPort for SystemClock {

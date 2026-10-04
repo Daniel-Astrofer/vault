@@ -1,10 +1,12 @@
-use std::net::{SocketAddr, ToSocketAddrs};
+use std::net::ToSocketAddrs;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::adapters::PeerHttpSettings;
+use crate::adapters::{build_mtls_rustls_client_config, PeerHttpSettings, TlsPeerVerifyPolicy};
 use crate::application::ports::PeerDirectoryPort;
 use crate::application::OnlineStatusPort;
+use crate::domain::DomainError;
 
 /// Honest online count for fail-stop: self + peers that answer `/v1/health`.
 ///
@@ -15,6 +17,7 @@ pub struct ProbedOnlineCount {
     peer_health_urls: Vec<String>,
     peer_http: PeerHttpSettings,
     auth_token: Option<String>,
+    tls: Option<rustls::ClientConfig>,
     /// Optional ceiling (from `VAULT_ONLINE_COUNT`); never raises above probed.
     max_online: Option<usize>,
     /// When true (lab only), skip probing and report `lab_static` — tests only.
@@ -22,6 +25,11 @@ pub struct ProbedOnlineCount {
 }
 
 impl ProbedOnlineCount {
+    /// Creates a health-probed counter using optional static-token auth.
+    ///
+    /// `max_online` is only a ceiling; it never increases the number proven by
+    /// successful probes. When no health URLs are supplied, clearnet peer TCP
+    /// endpoints are used as a weaker fallback.
     pub fn new(
         peers: Arc<dyn PeerDirectoryPort>,
         peer_health_urls: Vec<String>,
@@ -29,7 +37,26 @@ impl ProbedOnlineCount {
         auth_token: Option<String>,
         max_online: Option<usize>,
     ) -> Self {
-        Self { peers, peer_health_urls, peer_http, auth_token, max_online, lab_static: None }
+        Self { peers, peer_health_urls, peer_http, auth_token, tls: None, max_online, lab_static: None }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    /// Creates a health-probed counter using the supplied mTLS client identity.
+    ///
+    /// The static-token path is disabled. TLS setup errors are returned before
+    /// any peer probes are attempted.
+    pub fn with_mtls(
+        peers: Arc<dyn PeerDirectoryPort>,
+        peer_health_urls: Vec<String>,
+        peer_http: PeerHttpSettings,
+        client_cert_path: &Path,
+        client_key_path: &Path,
+        ca_path: &Path,
+        verify: &TlsPeerVerifyPolicy,
+        max_online: Option<usize>,
+    ) -> Result<Self, DomainError> {
+        let tls = build_mtls_rustls_client_config(client_cert_path, client_key_path, ca_path, verify)?;
+        Ok(Self { peers, peer_health_urls, peer_http, auth_token: None, tls: Some(tls), max_online, lab_static: None })
     }
 
     /// Lab / unit harness: fixed count without probing (never used in hardened boot).
@@ -39,6 +66,7 @@ impl ProbedOnlineCount {
             peer_health_urls: vec![],
             peer_http: PeerHttpSettings::clearnet_defaults(),
             auth_token: None,
+            tls: None,
             max_online: None,
             lab_static: Some(count),
         }
@@ -49,7 +77,12 @@ impl ProbedOnlineCount {
             Ok(b) => b,
             Err(_) => return false,
         };
-        builder = builder.timeout(Duration::from_millis(self.peer_http.connect_timeout.as_millis().min(500) as u64));
+        let timeout_cap_ms = if self.peer_http.transport.is_tor() { 5_000 } else { 500 };
+        builder = builder
+            .timeout(Duration::from_millis(self.peer_http.connect_timeout.as_millis().min(timeout_cap_ms) as u64));
+        if let Some(tls) = self.tls.clone() {
+            builder = builder.use_preconfigured_tls(tls);
+        }
         let Ok(client) = builder.build() else {
             return false;
         };
@@ -76,11 +109,15 @@ impl ProbedOnlineCount {
         let Some(sa) = iter.next() else {
             return false;
         };
-        std::net::TcpStream::connect_timeout(&SocketAddr::from(sa), Duration::from_millis(80)).is_ok()
+        std::net::TcpStream::connect_timeout(&sa, Duration::from_millis(80)).is_ok()
     }
 }
 
 impl OnlineStatusPort for ProbedOnlineCount {
+    /// Counts this process and peers that pass the configured liveness probe.
+    ///
+    /// Lab static mode returns its fixed value. Otherwise unresponsive and
+    /// unknown peers are excluded, and the optional configured ceiling is applied.
     fn online_count(&self) -> usize {
         if let Some(n) = self.lab_static {
             return n;

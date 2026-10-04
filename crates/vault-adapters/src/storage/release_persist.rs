@@ -13,6 +13,9 @@ use super::sync_util::lock_mutex;
 use crate::application::ports::{BlobStorePort, ReleaseStorePort};
 use crate::domain::{AllowlistEntry, ContentHash, DomainError, ReleaseCandidate, ReleasePhase, ReleasePolicy};
 
+/// Process-local atomic snapshot store for release metadata and content blobs.
+///
+/// Data survives a local restart but is not a replicated or authenticated mesh ledger.
 pub struct PersistedReleaseMesh {
     meta_path: PathBuf,
     blobs_dir: PathBuf,
@@ -20,6 +23,10 @@ pub struct PersistedReleaseMesh {
 }
 
 impl PersistedReleaseMesh {
+    /// Opens the release directory, restores any snapshot, and loads stored blobs.
+    ///
+    /// Invalid metadata fails startup. Individual unreadable or unparseable blob
+    /// entries are skipped during hydration.
     pub fn open(root: impl Into<PathBuf>, policy: ReleasePolicy) -> Result<Self, DomainError> {
         let root = root.into();
         let meta_path = root.join("release_meta.json");

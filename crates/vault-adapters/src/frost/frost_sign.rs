@@ -15,13 +15,22 @@ use crate::domain::DomainError;
 use crate::{FrostShareSlot, FrostShareState};
 
 #[derive(Debug)]
+/// Result metadata for a completed FROST signature operation.
 pub struct FrostAggregateResult {
+    /// Anti-replay session identifier supplied to the signing operation.
     pub session_id: String,
+    /// Ledger day epoch authorized for this signature.
     pub day_epoch: String,
+    /// Serialized FROST signature encoded as lowercase hexadecimal.
     pub signature_hex: String,
+    /// Number of local signing shares included in the aggregate.
     pub participants: usize,
 }
 
+/// Coordinates anti-replay, epoch validation, and in-process FROST signing.
+///
+/// This orchestrator assembles local shares and is intended for lab workflows;
+/// distributed production signing uses the wire signing implementation.
 pub struct FrostSignOrchestrator {
     shares: Arc<FrostShareSlot>,
     anti_nonce: Box<dyn AntiNoncePort>,
@@ -29,6 +38,7 @@ pub struct FrostSignOrchestrator {
 }
 
 impl FrostSignOrchestrator {
+    /// Creates an orchestrator with a newly initialized slot containing the given shares.
     pub fn new(
         key_packages: BTreeMap<Identifier, KeyPackage>,
         pubkey_package: PublicKeyPackage,
@@ -41,6 +51,7 @@ impl FrostSignOrchestrator {
         Self { shares, anti_nonce, rotation }
     }
 
+    /// Creates an orchestrator that reads its key material from a shared slot.
     pub fn from_share_slot(
         shares: Arc<FrostShareSlot>,
         anti_nonce: Box<dyn AntiNoncePort>,
@@ -49,11 +60,17 @@ impl FrostSignOrchestrator {
         Self { shares, anti_nonce, rotation }
     }
 
+    /// Returns a shared handle to the installed FROST material slot.
     pub fn share_slot(&self) -> Arc<FrostShareSlot> {
         self.shares.clone()
     }
 
-    /// Lab helper: run round1+round2+aggregate for `min_signers` participants in-process.
+    /// Signs a message using `min_signers` locally available shares.
+    ///
+    /// The message is bound to the session ID and current day epoch before
+    /// signing. The session is claimed before subsequent validation, so any
+    /// failure after the claim consumes that anti-replay ID. This in-process
+    /// operation is for lab use; distributed nodes must use wire signing.
     pub fn sign_lab_quorum(&self, session_id: &str, message: &[u8]) -> Result<FrostAggregateResult, DomainError> {
         self.anti_nonce.claim_session(session_id)?;
         let day_epoch = self.rotation.current_day_epoch()?;
@@ -91,7 +108,7 @@ impl FrostSignOrchestrator {
                 Ok(share) => share,
                 Err(e) => {
                     // Zeroize ephemeral round nonces on failure (side-channel hygiene).
-                    for (_, n) in nonces_map.iter_mut() {
+                    for n in nonces_map.values_mut() {
                         n.zeroize();
                     }
                     return Err(DomainError::ThresholdError(format!("frost round2: {e}")));
@@ -125,6 +142,7 @@ impl FrostSignOrchestrator {
         })
     }
 
+    /// Serializes an aggregate result with the `frost-secp256k1-v3` scheme tag.
     pub fn to_json(result: &FrostAggregateResult) -> String {
         format!(
             r#"{{"session_id":"{}","day_epoch":"{}","signature":"{}","participants":{},"scheme":"frost-secp256k1-v3"}}"#,

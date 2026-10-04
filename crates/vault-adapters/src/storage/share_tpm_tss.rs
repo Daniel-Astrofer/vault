@@ -54,7 +54,7 @@
 
 use crate::domain::DomainError;
 
-use super::share_tpm::{TpmSealAdapter, TpmSealPort};
+use super::share_tpm::TpmSealPort;
 
 /// Envelope magic for TSS hardware-sealed blobs (v2).
 ///
@@ -95,128 +95,8 @@ impl TpmTssSealAdapter {
     }
 
     /// Returns the TCTI device string.
-    fn tcti(&self) -> &str {
+    pub fn tcti(&self) -> &str {
         self.tcti_path.as_deref().unwrap_or("device:/dev/tpmrm0")
-    }
-
-    // ---- Real TSS seal implementation (documented) ----
-
-    /// TSS seal: seal plaintext with PCR policy + auth value + AAD bind.
-    ///
-    /// ```ignore
-    /// fn tss_seal(
-    ///     plaintext: &[u8],
-    ///     pcr_policy_digest: &[u8],   // expected PCR composite digest
-    ///     auth_passphrase: &[u8],     // Argon2id of passphrase
-    ///     aad: &[u8],                 // share_id + node_id
-    /// ) -> Result<Vec<u8>, DomainError> {
-    ///     // 1. Open TPM context
-    ///     let mut ctx = Context::new(tcti())
-    ///         .map_err(|e| seal_error("TSS context open", e))?;
-    ///
-    ///     // 2. Create primary key under Owner hierarchy (TPM2_SE_Trial for auth-less
-    ///     //    key creation; sealed data keys are created under this primary)
-    ///     let primary = ctx.create_primary(
-    ///         Hierarchy::Owner,
-    ///         // ... template, unique data ...
-    ///     )?;
-    ///
-    ///     // 3. Build PCR selection: PCR 0-7 (measured boot chain)
-    ///     let pcr_selection = PcrSelectionList::new()
-    ///         .with_selection(PcrSlot::Slot0,
-    ///            &[PcrSlot::Slot0, PcrSlot::Slot1, PcrSlot::Slot2, PcrSlot::Slot3,
-    ///              PcrSlot::Slot4, PcrSlot::Slot5, PcrSlot::Slot6, PcrSlot::Slot7]);
-    ///
-    ///     // 4. Build policy digest: PolicyPcr AND PolicyAuthValue
-    ///     //    - PolicyPcr: bind to current PCR values → boot integrity attestation
-    ///     //    - PolicyAuthValue: require passphrase-derived auth
-    ///     let trial = ctx.execute_with_temporary_session(|ctx| {
-    ///         ctx.create_trial_session()?
-    ///     })?;
-    ///     ctx.policy_pcr(trial, &pcr_selection, pcr_policy_digest)?;
-    ///     ctx.policy_auth_value(trial)?;
-    ///     let policy_digest = ctx.policy_get_digest(trial)?;
-    ///     // policy_digest is the compound hash encoding "PCRs correct AND auth present"
-    ///
-    ///     // 5. Create sealed data object
-    ///     //    auth_value = Argon2id(auth_passphrase, salt)
-    ///     //    sensitive = SensitiveData { data: plaintext, aad: aad_bind }
-    ///     let sealed = ctx.create(
-    ///         primary,
-    ///         Tpm2BPublic::from(&public_template),
-    ///         Some(Tpm2BAuth::from(auth_passphrase)),
-    ///         SensitiveCreate {
-    ///             user_auth: auth_passphrase.to_vec(),
-    ///             data: plaintext.to_vec(),
-    ///         },
-    ///         &pcr_selection,
-    ///     )?;
-    ///
-    ///     // 6. Encode sealed blob for persistent storage
-    ///     //    Format: MAGIC(8) | VERSION(1) | MODE_HW(1) | sealed_blob + public_area
-    ///     Ok(encode_sealed_envelope(&sealed, &pcr_selection))
-    /// }
-    /// ```
-    fn tss_seal(
-        &self,
-        _plaintext: &[u8],
-        _pcr_policy_digest: &[u8],
-        _auth_passphrase: &[u8],
-        _aad: &[u8],
-    ) -> Result<Vec<u8>, DomainError> {
-        Err(Self::tss_not_linked())
-    }
-
-    /// TSS unseal: unseal with PCR validation + auth value.
-    ///
-    /// ```ignore
-    /// fn tss_unseal(
-    ///     sealed: &[u8],
-    ///     pcr_policy_digest: &[u8],   // expected PCR composite digest
-    ///     auth_passphrase: &[u8],     // Argon2id of passphrase
-    /// ) -> Result<Vec<u8>, DomainError> {
-    ///     // 1. Open TPM context
-    ///     let mut ctx = Context::new(tcti())?;
-    ///
-    ///     // 2. Decode sealed envelope → sealed_blob + public_area
-    ///     let (sealed_blob, _pcr_selection) = decode_sealed_envelope(sealed)?;
-    ///
-    ///     // 3. Load primary key from public area
-    ///     let primary_handle = ctx.load_external_public(public_area);
-    ///
-    ///     // 4. Load sealed object
-    ///     let sealed_handle = ctx.load(primary_handle, &sealed_blob)?;
-    ///
-    ///     // 5. Set auth value for the session
-    ///     let (auth_session, _) = ctx.start_auth_session(
-    ///         None, None, None,
-    ///         SessionType::Policy,
-    ///         SymmetricDefinition::AES_256_CFB,
-    ///         HashAlg::Sha256,
-    ///     )?;
-    ///
-    ///     // 6. Satisfy PolicyPcr: feed current PCR values
-    ///     ctx.policy_pcr(auth_session, /* current PCR readings */)?;
-    ///
-    ///     // 7. Satisfy PolicyAuthValue: provide passphrase
-    ///     ctx.tr_set_auth(sealed_handle, auth_passphrase)?;
-    ///
-    ///     // 8. Unseal: TPM verifies PCR policy AND auth value
-    ///     //    If PCR values don't match → TPM returns error → fail-closed
-    ///     //    If auth value wrong → TPM returns error → fail-closed
-    ///     let plaintext = ctx.unseal(sealed_handle)?;
-    ///
-    ///     // 9. Verify AAD bind (share_id + node_id) from sensitive area
-    ///     Ok(plaintext)
-    /// }
-    /// ```
-    fn tss_unseal(
-        &self,
-        _sealed: &[u8],
-        _pcr_policy_digest: &[u8],
-        _auth_passphrase: &[u8],
-    ) -> Result<Vec<u8>, DomainError> {
-        Err(Self::tss_not_linked())
     }
 
     // ---- AK (Attestation Key) identity binding (documented) ----
@@ -311,13 +191,9 @@ impl TpmTssSealAdapter {
     fn tss_not_linked() -> DomainError {
         DomainError::TpmRequired(
             "TPM TSS seal/unseal not linked: rebuild with --features tpm and install \
-             libtss2-esys + libtss2-tcti-device. See docs/ops/TPM_SETUP.md for details."
+             libtss2-esys + libtss2-tcti-device. See docs/security/SECURE_BOOT_VAULT.md for details."
                 .into(),
         )
-    }
-
-    fn seal_error(context: &str, e: impl std::fmt::Display) -> DomainError {
-        DomainError::TpmRequired(format!("TPM TSS {context}: {e}"))
     }
 }
 

@@ -17,6 +17,7 @@ pub struct GetMetrics {
 }
 
 impl GetMetrics {
+    /// Creates the metrics handler for one node and its backing read ports.
     pub fn new(node_id: NodeId, ledger: Arc<dyn LedgerPort>, buckets: Option<Arc<dyn BucketLedgerPort>>) -> Self {
         Self {
             node_id,
@@ -41,6 +42,10 @@ impl GetMetrics {
         }
     }
 
+    /// Renders current counters and ledger values in Prometheus text exposition format.
+    ///
+    /// The optional bucket port contributes pending-intent count; ledger and
+    /// bucket read errors propagate to the caller.
     pub fn execute(&self) -> Result<String, vault_domain::DomainError> {
         let epoch = self.ledger.epoch()?;
         let buckets = self.buckets.as_ref().map(|b| b.count_pending_intents()).transpose()?.unwrap_or(0);

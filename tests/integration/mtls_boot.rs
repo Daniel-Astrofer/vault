@@ -2,7 +2,6 @@
 //! Lab static_token remains the default; this exercises the Gate visualize path.
 #![cfg(not(feature = "production"))]
 
-use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -214,9 +213,4 @@ fn rotate_lab_mtls_refreshes_spiffe_tree_and_java_materials() {
     assert!(meta.contains("/spiffe/trust-bundle.pem"));
     assert!(certs.join("spiffe/vault/vault-1/svid.pem").is_file());
     assert!(certs.join("spiffe/trust-bundle.pem").is_file());
-}
-
-#[allow(dead_code)]
-fn _addr_type_check(a: SocketAddr) -> SocketAddr {
-    a
 }

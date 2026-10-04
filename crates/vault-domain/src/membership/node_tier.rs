@@ -10,12 +10,16 @@ use crate::{DomainError, NodeId};
 /// - [`Sev`](Self::Sev) / [`Sgx`](Self::Sgx): real confidential-compute upgrade when HW is present.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum VaultNodeTier {
+    /// Domestic operator hardware; may use software measurement or optional TPM sealing.
     Domestic,
+    /// Intel SGX enclave-backed node.
     Sgx,
+    /// AMD SEV-SNP confidential-computing node.
     Sev,
 }
 
 impl VaultNodeTier {
+    /// Parse a tier name or supported alias, trimming whitespace and ignoring ASCII case.
     pub fn parse(raw: &str) -> Option<Self> {
         match raw.trim().to_ascii_lowercase().as_str() {
             "domestic" | "home" | "tpm" => Some(Self::Domestic),
@@ -25,6 +29,7 @@ impl VaultNodeTier {
         }
     }
 
+    /// Return the canonical lowercase tier name used by configuration and health output.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Domestic => "domestic",
@@ -52,10 +57,12 @@ impl VaultNodeTier {
         }
     }
 
+    /// Return whether this tier represents a hardware trusted execution environment.
     pub fn is_tee(self) -> bool {
         matches!(self, Self::Sev | Self::Sgx)
     }
 
+    /// Return whether this tier represents the domestic, non-TEE operating mode.
     pub fn is_domestic(self) -> bool {
         matches!(self, Self::Domestic)
     }
@@ -64,7 +71,9 @@ impl VaultNodeTier {
 /// Candidate for genesis / signing seating.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SeatingCandidate {
+    /// Stable mesh node identifier used for deduplication and deterministic tie-breaking.
     pub id: NodeId,
+    /// Trust tier whose priority determines seat ordering.
     pub tier: VaultNodeTier,
 }
 
@@ -96,6 +105,9 @@ pub fn seat_genesis_by_tier(candidates: &[SeatingCandidate], n: usize) -> Vec<No
 ///
 /// Device probing and environment reads belong to outer layers; this function
 /// receives their already-resolved result so the domain remains deterministic.
+/// Returns the resolved tier and whether detection reported a TEE. The `auto`
+/// keyword is recognized exactly after trimming; explicit tier names are parsed
+/// case-insensitively by [`VaultNodeTier::parse`].
 pub fn resolve_node_tier(
     raw: Option<&str>,
     detected: Option<VaultNodeTier>,
@@ -160,7 +172,9 @@ mod tests {
 /// Timeout: if TEE node does not complete admission within `timeout_hours`,
 /// a domestic node may be admitted as fallback.
 ///
-/// Returns `(target_tier, timeout_secs)` for the admission window.
+/// Returns the tier to admit: domestic immediately, or the requested TEE tier
+/// until its attestation has exceeded the timeout, after which it falls back to domestic.
+/// A missing attestation timestamp leaves the TEE candidate pending at its requested tier.
 pub fn admission_seating(
     tier: VaultNodeTier,
     attested_at_secs: Option<u64>,

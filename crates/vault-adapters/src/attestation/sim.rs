@@ -18,14 +18,20 @@ pub struct SimAttestationAdapter {
 }
 
 impl SimAttestationAdapter {
+    /// Creates a simulation-mode attestation adapter using the supplied local MAC material.
     pub fn new(lab_root_material: &[u8]) -> Self {
         Self::with_mode(AttestationMode::Sim, lab_root_material)
     }
 
+    /// Creates a software-measurement adapter; this does not provide hardware attestation.
     pub fn software(lab_root_material: &[u8]) -> Self {
         Self::with_mode(AttestationMode::Software, lab_root_material)
     }
 
+    /// Creates a simulation or software-measurement adapter.
+    ///
+    /// Any mode other than `Sim` or `Software` is coerced to `Sim`; the adapter
+    /// cannot issue SEV/SGX or other hardware-backed quotes.
     pub fn with_mode(mode: AttestationMode, lab_root_material: &[u8]) -> Self {
         let mode = if mode.is_software_measurement() { mode } else { AttestationMode::Sim };
         Self { mode, lab_root: lab_root_material.to_vec() }
@@ -45,14 +51,17 @@ impl SimAttestationAdapter {
 }
 
 impl AttestationPort for SimAttestationAdapter {
+    /// Returns the effective mode selected by the constructor.
     fn mode(&self) -> AttestationMode {
         self.mode
     }
 
+    /// Creates a local MAC-style quote over the measurement.
     fn issue_quote(&self, measurement: &Measurement) -> Result<AttestationQuote, DomainError> {
         Ok(AttestationQuote { mode: self.mode, measurement: measurement.clone(), quote_blob: self.mac(measurement) })
     }
 
+    /// Checks mode equality and recomputes this adapter's local quote MAC.
     fn verify_quote(&self, quote: &AttestationQuote) -> Result<(), DomainError> {
         if quote.mode != self.mode {
             return Err(DomainError::AttestationRejected(format!(

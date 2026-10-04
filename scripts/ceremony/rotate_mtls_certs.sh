@@ -52,7 +52,7 @@ for node_id in "${NODE_IDS[@]}"; do
   spiffe_id="spiffe://${TRUST_DOMAIN}/vault/${node_id}"
   mkdir -p "nodes/${node_id}"
   EXTRA_SAN="DNS:localhost,DNS:${node_id},DNS:vault-1,DNS:vault-2,DNS:vault-3,IP:127.0.0.1"
-  EXTRA_SAN="$(mtls_onion_extra_san "$EXTRA_SAN" "${VAULT_LAB_MTLS_ONION_SANS:-}")"
+  EXTRA_SAN="$(mtls_onion_extra_san "$EXTRA_SAN" "${VAULT_CEREMONY_MTLS_ONION_SANS:-${VAULT_LAB_MTLS_ONION_SANS:-}}")"
   (
     cd "nodes/${node_id}"
     cp -f ../../ca.crt ../../ca.key .

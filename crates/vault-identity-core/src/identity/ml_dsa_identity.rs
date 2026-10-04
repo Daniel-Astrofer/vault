@@ -29,6 +29,12 @@ const ML_DSA_65_PUBLIC_KEY_LEN: usize = 1952;
 const ML_DSA_65_SIGNATURE_LEN: usize = 3309;
 
 impl MlDsa65Identity {
+    /// Construct an identity from encoded ML-DSA-65 secret and public key bytes.
+    ///
+    /// Both inputs must have the fixed lengths defined by FIPS 204 for
+    /// ML-DSA-65. This checks lengths but does not prove that the public key
+    /// corresponds to the supplied secret key; callers should obtain the pair
+    /// from a trusted generation or deserialization path.
     pub fn from_raw(secret: &[u8], public: &[u8]) -> Result<Self, IdentityError> {
         if secret.len() != ML_DSA_65_SECRET_KEY_LEN {
             return Err(IdentityError::InvalidKeyMaterial(format!(
@@ -50,12 +56,6 @@ impl MlDsa65Identity {
             .map_err(|_| IdentityError::InvalidKeyMaterial("bad expanded SK length".into()))?;
         #[allow(deprecated)]
         Ok(ExpandedSigningKey::<MlDsa65>::from_expanded(&arr))
-    }
-
-    fn load_vk(&self) -> Result<VerifyingKey<MlDsa65>, IdentityError> {
-        let arr = EncodedVerifyingKey::<MlDsa65>::try_from(self.public_key.as_slice())
-            .map_err(|_| IdentityError::InvalidKeyMaterial("bad VK length".into()))?;
-        Ok(VerifyingKey::<MlDsa65>::decode(&arr))
     }
 }
 
@@ -128,7 +128,7 @@ impl VaultIdentity for MlDsa65Identity {
         let sig = Signature::<MlDsa65>::decode(&sig_arr)
             .ok_or_else(|| IdentityError::InvalidKeyMaterial("invalid signature bytes".into()))?;
 
-        Ok(vk.verify_internal(message, &sig))
+        Ok(ml_dsa::Verifier::verify(&vk, message, &sig).is_ok())
     }
 
     fn to_bytes(&self) -> Vec<u8> {

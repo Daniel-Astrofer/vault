@@ -23,14 +23,19 @@ use crate::{build_mtls_rustls_client_config, post_json_with_retry, PeerHttpSetti
 
 // ── Phase enumeration ───────────────────────────────────────────────────────
 
+/// Local state of one distributed reshare session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WireResharePhase {
+    /// Round-one refresh commitments are being collected.
     Round1,
+    /// Round-two per-recipient refresh packages are being collected.
     Round2,
+    /// The refreshed local share was produced and persisted.
     Complete,
 }
 
 impl WireResharePhase {
+    /// Return the stable lowercase phase label used by the status response.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Round1 => "round1",
@@ -42,13 +47,26 @@ impl WireResharePhase {
 
 // ── Peer auth ───────────────────────────────────────────────────────────────
 
+/// Authentication configuration for outbound reshare requests to peers.
 #[derive(Debug, Clone)]
 pub enum WireResharePeerAuth {
+    /// Attach the shared Vault token header; transport uses cleartext HTTP.
     StaticToken(String),
-    MutualTls { client_cert_path: PathBuf, client_key_path: PathBuf, ca_path: PathBuf, verify: TlsPeerVerifyPolicy },
+    /// Use client certificates and the configured peer verification policy.
+    MutualTls {
+        /// PEM client certificate presented to the remote vault.
+        client_cert_path: PathBuf,
+        /// PEM private key corresponding to `client_cert_path`.
+        client_key_path: PathBuf,
+        /// CA bundle used to validate the remote TLS certificate.
+        ca_path: PathBuf,
+        /// Rules controlling remote peer certificate verification.
+        verify: TlsPeerVerifyPolicy,
+    },
 }
 
 impl WireResharePeerAuth {
+    /// Return whether outbound requests are configured to use mutual TLS.
     pub fn is_mtls(&self) -> bool {
         matches!(self, Self::MutualTls { .. })
     }
@@ -56,55 +74,93 @@ impl WireResharePeerAuth {
 
 // ── Wire message types ──────────────────────────────────────────────────────
 
+/// Round-one broadcast carrying one node's FROST refresh DKG package.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReshareRound1WireMessage {
+    /// Session identifier tying this message to a frozen reshare transcript.
     pub session_id: String,
+    /// Mesh node identifier that produced the round-one package.
     pub sender_node_id: String,
+    /// Numeric FROST identifier assigned to the sender in the canonical roster.
     pub sender_identifier: u16,
+    /// Total roster size committed by the session.
     pub max_signers: u16,
+    /// Threshold required by the refreshed key package.
     pub min_signers: u16,
+    /// UTC day epoch bound into this reshare.
     pub day_epoch: String,
+    /// SHA-384 transcript digest binding session, epoch, roster, thresholds, and constitution.
     pub transcript_hex: String,
+    /// Serialized FROST round-one package encoded as hexadecimal.
     pub package_hex: String,
+    /// Optional encrypted envelope for deployments that wrap wire payloads.
     #[serde(default)]
     pub envelope: Option<HybridEnvelope>,
 }
 
+/// Private round-two refresh package addressed to one roster participant.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReshareRound2WireMessage {
+    /// Session identifier tying this message to a frozen reshare transcript.
     pub session_id: String,
+    /// Mesh node identifier that produced this package.
     pub sender_node_id: String,
+    /// Numeric FROST identifier assigned to the sender in the canonical roster.
     pub sender_identifier: u16,
+    /// Intended mesh node recipient for this private round-two package.
     pub recipient_node_id: String,
+    /// Numeric FROST identifier assigned to the intended recipient.
     pub recipient_identifier: u16,
+    /// SHA-384 transcript digest binding this message to the active session.
     pub transcript_hex: String,
+    /// Serialized recipient-specific FROST round-two package encoded as hexadecimal.
     pub package_hex: String,
+    /// Optional encrypted envelope for deployments that wrap wire payloads.
     #[serde(default)]
     pub envelope: Option<HybridEnvelope>,
 }
 
+/// Configuration and transcript inputs used to initialize a reshare session.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReshareStartRequest {
+    /// Caller-selected identifier for this reshare attempt.
     pub session_id: String,
+    /// Total number of nodes in the roster.
     pub max_signers: u16,
+    /// Minimum signer threshold for the refreshed key.
     pub min_signers: u16,
+    /// Node IDs whose sorted order determines stable FROST identifiers.
     pub roster: Vec<String>,
+    /// UTC day epoch to bind into the session transcript.
     pub day_epoch: String,
+    /// Active constitution digest bound into the session transcript.
     pub constitution_hash: String,
 }
 
+/// Public progress snapshot for one local reshare session.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WireReshareStatus {
+    /// Identifier of the reported reshare session.
     pub session_id: String,
+    /// Stable lowercase label of the current protocol phase.
     pub phase: String,
+    /// Node identifier of the vault producing this local status.
     pub local_node_id: String,
+    /// Local node's numeric FROST identifier in the roster.
     pub local_identifier: u16,
+    /// Total participant count frozen for this session.
     pub max_signers: u16,
+    /// Required signer threshold frozen for this session.
     pub min_signers: u16,
+    /// SHA-384 transcript digest all messages must match.
     pub transcript_hex: String,
+    /// Number of round-one packages currently stored, including the local package.
     pub round1_received: usize,
+    /// Number of remote round-two packages currently stored.
     pub round2_received: usize,
+    /// Whether the local refreshed key share has been persisted successfully.
     pub complete: bool,
+    /// Group verifying key as hex after completion; absent before finalization.
     pub verifying_key_hex: Option<String>,
 }
 
@@ -119,7 +175,6 @@ struct ReshareSessionInner {
     roster: BTreeMap<String, Identifier>,
     transcript_hex: String,
     day_epoch: DayEpoch,
-    constitution_hash: String,
     phase: WireResharePhase,
     round1_secret: Option<frost::keys::dkg::round1::SecretPackage>,
     round1_packages: BTreeMap<Identifier, frost::keys::dkg::round1::Package>,
@@ -133,6 +188,7 @@ struct ReshareSessionInner {
 }
 
 impl ReshareSessionInner {
+    /// Derive a status view from the local phase and package maps.
     fn status(&self) -> WireReshareStatus {
         let verifying_key_hex =
             self.new_pubkey_package.as_ref().map(|pk| hex::encode(pk.verifying_key().serialize().unwrap_or_default()));
@@ -154,12 +210,15 @@ impl ReshareSessionInner {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
+/// Convert the one-based wire identifier to the FROST library identifier type.
 fn identifier_from_u16(v: u16) -> Result<Identifier, DomainError> {
     Identifier::try_from(v).map_err(|e| DomainError::ThresholdError(format!("invalid identifier {v}: {e}")))
 }
 
+/// Find a FROST identifier in the roster and convert it back to its wire number.
+/// Returns zero only when the identifier is not present in the roster.
 fn identifier_to_u16(roster: &BTreeMap<String, Identifier>, id: Identifier) -> u16 {
-    for (_, ident) in roster {
+    for ident in roster.values() {
         if *ident == id {
             return ident.serialize()[0] as u16;
         }
@@ -167,8 +226,9 @@ fn identifier_to_u16(roster: &BTreeMap<String, Identifier>, id: Identifier) -> u
     0
 }
 
+/// Assign stable one-based FROST identifiers from lexicographically sorted node IDs.
 fn build_reshare_roster(roster: &[String]) -> Result<BTreeMap<String, Identifier>, DomainError> {
-    let mut sorted: Vec<String> = roster.iter().cloned().collect();
+    let mut sorted: Vec<String> = roster.to_vec();
     sorted.sort();
     let mut map = BTreeMap::new();
     for (i, node) in sorted.into_iter().enumerate() {
@@ -189,8 +249,8 @@ fn reshare_transcript(
     let mut h = Sha384::new();
     h.update(session_id.as_bytes());
     h.update(day_epoch.as_str().as_bytes());
-    h.update(&max_signers.to_be_bytes());
-    h.update(&min_signers.to_be_bytes());
+    h.update(max_signers.to_be_bytes());
+    h.update(min_signers.to_be_bytes());
     let mut sorted: Vec<&String> = roster.keys().collect();
     sorted.sort();
     for node in &sorted {
@@ -200,6 +260,7 @@ fn reshare_transcript(
     hex::encode(h.finalize())
 }
 
+/// Require a reshare to preserve the group's public verifying key.
 fn assert_vk_preserved(old: &PublicKeyPackage, new: &PublicKeyPackage, suite: &str) -> Result<(), DomainError> {
     if *old.verifying_key() != *new.verifying_key() {
         return Err(DomainError::ThresholdError(format!(
@@ -234,6 +295,7 @@ fn build_reshare_http_client(
 
 // ── Hub ─────────────────────────────────────────────────────────────────────
 
+/// Coordinates one node's local FROST Taproot refresh protocol and peer message exchange.
 pub struct WireReshareHub {
     local_node_id: String,
     peer_addrs: BTreeMap<String, String>,
@@ -245,6 +307,10 @@ pub struct WireReshareHub {
 }
 
 impl WireReshareHub {
+    /// Create a hub using default clearnet HTTP retry settings.
+    ///
+    /// Static-token authentication selects HTTP; mutual TLS selects HTTPS and
+    /// builds the TLS client from the supplied certificate paths.
     pub fn new(
         local_node_id: impl Into<String>,
         peer_addrs: BTreeMap<String, String>,
@@ -262,6 +328,7 @@ impl WireReshareHub {
         })
     }
 
+    /// Create a hub with explicit peer timeout/backoff settings.
     pub fn with_peer_http(
         local_node_id: impl Into<String>,
         peer_addrs: BTreeMap<String, String>,
@@ -280,10 +347,12 @@ impl WireReshareHub {
         })
     }
 
+    /// Return the most recently finalized local key and public package, if any.
     pub fn completed_local(&self) -> Option<(KeyPackage, PublicKeyPackage, u16)> {
         self.completed.lock().expect("reshare completed").clone()
     }
 
+    /// Return local progress for a session, or a threshold error if it is unknown.
     pub fn status(&self, session_id: &str) -> Result<WireReshareStatus, DomainError> {
         let g = self.sessions.lock().expect("reshare sessions");
         let s = g
@@ -292,6 +361,11 @@ impl WireReshareHub {
         Ok(s.status())
     }
 
+    /// Start or idempotently resume round one for the supplied frozen roster and transcript.
+    ///
+    /// Existing sessions may be resumed only when transcript, roster, and
+    /// threshold parameters match exactly. A new session requires this node to
+    /// appear in the roster and retains the prior local key package for finalization.
     pub fn start(
         &self,
         req: ReshareStartRequest,
@@ -358,8 +432,8 @@ impl WireReshareHub {
             DomainError::ThresholdError(format!("local node {} missing from reshare roster", self.local_node_id))
         })?;
 
-        let mut rng = OsRng;
-        let (secret, package) = refresh_dkg_part1(local_identifier, req.max_signers, req.min_signers, &mut rng)
+        let rng = OsRng;
+        let (secret, package) = refresh_dkg_part1(local_identifier, req.max_signers, req.min_signers, rng)
             .map_err(|e| DomainError::ThresholdError(format!("frost refresh part1: {e}")))?;
 
         let package_hex = hex::encode(
@@ -378,7 +452,6 @@ impl WireReshareHub {
             roster,
             transcript_hex: transcript_hex.clone(),
             day_epoch,
-            constitution_hash: req.constitution_hash,
             phase: WireResharePhase::Round1,
             round1_secret: Some(secret),
             round1_packages,
@@ -407,6 +480,7 @@ impl WireReshareHub {
         Ok((status, wire))
     }
 
+    /// Validate and record one peer's round-one package; advances locally when the roster is complete.
     pub fn ingest_round1(&self, msg: ReshareRound1WireMessage) -> Result<WireReshareStatus, DomainError> {
         if let Some(ref env) = msg.envelope {
             env.validate_header().map_err(|e| DomainError::ThresholdError(format!("reshare r1 envelope: {e}")))?;
@@ -453,6 +527,7 @@ impl WireReshareHub {
         Ok(session.status())
     }
 
+    /// Consume the round-one secret and derive the local secret plus outbound round-two packages.
     fn advance_to_round2(session: &mut ReshareSessionInner) -> Result<(), DomainError> {
         let mut r1_received = session.round1_packages.clone();
         r1_received.remove(&session.local_identifier);
@@ -468,6 +543,10 @@ impl WireReshareHub {
         Ok(())
     }
 
+    /// Drain locally generated round-two packages into recipient-addressed wire messages.
+    ///
+    /// The packages are removed from the outbound map before serialization, so
+    /// a serialization error does not automatically restore them for another call.
     pub fn take_round2_outbound(&self, session_id: &str) -> Result<Vec<ReshareRound2WireMessage>, DomainError> {
         let mut g = self.sessions.lock().expect("reshare sessions");
         let session = g
@@ -497,6 +576,7 @@ impl WireReshareHub {
         Ok(out)
     }
 
+    /// Validate recipient/transcript/sender binding and store a round-two peer package.
     pub fn ingest_round2(&self, msg: ReshareRound2WireMessage) -> Result<WireReshareStatus, DomainError> {
         if let Some(ref env) = msg.envelope {
             env.validate_header().map_err(|e| DomainError::ThresholdError(format!("reshare r2 envelope: {e}")))?;
@@ -536,6 +616,11 @@ impl WireReshareHub {
         Ok(session.status())
     }
 
+    /// Finalize the refreshed share after all remote round-two packages arrive, preserving the group key.
+    ///
+    /// Persists the private local package and public package via `share_store`
+    /// before marking the session complete. The share identifier is scoped to
+    /// the local FROST identifier.
     pub fn finalize(
         &self,
         session_id: &str,
@@ -597,6 +682,7 @@ impl WireReshareHub {
         Ok(session.status())
     }
 
+    /// Apply the configured static-token header; mTLS credentials are set on the client itself.
     fn apply_peer_auth_headers(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         match &self.peer_auth {
             WireResharePeerAuth::StaticToken(token) => req.header("X-Vault-Token", token),
@@ -604,6 +690,7 @@ impl WireReshareHub {
         }
     }
 
+    /// Send the round-one package to every configured remote peer with retry policy.
     pub async fn fanout_round1(&self, msg: &ReshareRound1WireMessage) -> Result<(), DomainError> {
         let mtls = self.peer_auth.is_mtls();
         for (peer_id, addr) in &self.peer_addrs {
@@ -624,6 +711,7 @@ impl WireReshareHub {
         Ok(())
     }
 
+    /// Send each private round-two package to its named recipient with retry policy.
     pub async fn fanout_round2(&self, messages: &[ReshareRound2WireMessage]) -> Result<(), DomainError> {
         let mtls = self.peer_auth.is_mtls();
         for msg in messages {

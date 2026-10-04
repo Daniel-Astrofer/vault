@@ -1,3 +1,9 @@
+//! Application workflows for proposing, rebuilding, cosigning, and activating releases.
+//!
+//! These use cases coordinate content storage and governance state. Release
+//! binaries are only added to the allowlist after quorum, rebuild, constitution,
+//! and timelock predicates pass.
+
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -8,6 +14,7 @@ use vault_domain::{
     ReleasePhase,
 };
 
+/// Use case for publishing release source/binary artifacts and creating a candidate.
 pub struct ProposeRelease {
     releases: Arc<dyn ReleaseStorePort>,
     blobs: Arc<dyn BlobStorePort>,
@@ -16,6 +23,7 @@ pub struct ProposeRelease {
 }
 
 impl ProposeRelease {
+    /// Create the proposal workflow with blob, release, ledger, and clock ports.
     pub fn new(
         releases: Arc<dyn ReleaseStorePort>,
         blobs: Arc<dyn BlobStorePort>,
@@ -26,6 +34,9 @@ impl ProposeRelease {
     }
 
     /// Lab: publish source bytes → Hs, derive Hb via lab rebuild, store both blobs + candidate.
+    ///
+    /// Stores the source and deterministic lab binary before checking council quorum
+    /// and persisting the candidate; an error after blob writes can leave unreferenced blobs.
     pub fn execute(
         &self,
         release_id: &str,
@@ -56,6 +67,9 @@ impl ProposeRelease {
     }
 
     /// Propose with explicit Hs/Hb (tamper tests). Source blob for `hs` must already exist.
+    ///
+    /// This path verifies source availability and council quorum but intentionally
+    /// does not prove that `hb` is the result of rebuilding `hs`.
     pub fn execute_with_hashes(
         &self,
         release_id: &str,
@@ -82,16 +96,22 @@ impl ProposeRelease {
     }
 }
 
+/// Use case for independently rebuilding a candidate and recording a vault attestation.
 pub struct RebuildRelease {
     releases: Arc<dyn ReleaseStorePort>,
     blobs: Arc<dyn BlobStorePort>,
 }
 
 impl RebuildRelease {
+    /// Create the rebuild workflow with candidate storage and content-addressed blobs.
     pub fn new(releases: Arc<dyn ReleaseStorePort>, blobs: Arc<dyn BlobStorePort>) -> Self {
         Self { releases, blobs }
     }
 
+    /// Rehash the stored source, derive its lab binary hash, and record this vault's rebuild.
+    ///
+    /// A source hash mismatch returns [`DomainError::MeasurementMismatch`]; the
+    /// domain candidate rejects rebuilt binary hashes that differ from its expected `Hb`.
     pub fn execute(&self, release_id: &str, vault_id: &NodeId) -> Result<ReleaseCandidate, DomainError> {
         let mut candidate = self.releases.get_candidate(release_id)?;
         let source = self.blobs.get(&candidate.hs)?;
@@ -106,6 +126,7 @@ impl RebuildRelease {
     }
 }
 
+/// Use case for adding the local vault's cosign after release predicates pass.
 pub struct CosignRelease {
     releases: Arc<dyn ReleaseStorePort>,
     ledger: Arc<dyn LedgerPort>,
@@ -115,6 +136,7 @@ pub struct CosignRelease {
 }
 
 impl CosignRelease {
+    /// Create the cosign workflow for the local vault identity.
     pub fn new(
         releases: Arc<dyn ReleaseStorePort>,
         ledger: Arc<dyn LedgerPort>,
@@ -124,11 +146,16 @@ impl CosignRelease {
         Self { releases, ledger, clock, local_node, governance: None }
     }
 
+    /// Enable optional governance reward accrual after the candidate is saved.
     pub fn with_governance(mut self, governance: Arc<AccrueGovernanceWork>) -> Self {
         self.governance = Some(governance);
         self
     }
 
+    /// Check release predicates, add the local cosign, persist the candidate, then accrue reward.
+    ///
+    /// Persistence happens before optional governance accrual; an accrual failure
+    /// is returned even though the cosign has already been saved.
     pub fn execute(&self, release_id: &str) -> Result<ReleaseCandidate, DomainError> {
         let mut candidate = self.releases.get_candidate(release_id)?;
         let policy = self.releases.policy()?;
@@ -137,12 +164,13 @@ impl CosignRelease {
         candidate.add_cosign(&self.local_node)?;
         self.releases.save_candidate(candidate.clone())?;
         if let Some(gov) = &self.governance {
-            gov.execute(GovernanceJobKind::ReleaseCosign, &[self.local_node.clone()], release_id)?;
+            gov.execute(GovernanceJobKind::ReleaseCosign, std::slice::from_ref(&self.local_node), release_id)?;
         }
         Ok(candidate)
     }
 }
 
+/// Use case for promoting a sufficiently cosigned candidate into the release allowlist.
 pub struct ActivateRelease {
     releases: Arc<dyn ReleaseStorePort>,
     ledger: Arc<dyn LedgerPort>,
@@ -151,15 +179,21 @@ pub struct ActivateRelease {
 }
 
 impl ActivateRelease {
+    /// Create the activation workflow with release, governance ledger, and clock ports.
     pub fn new(releases: Arc<dyn ReleaseStorePort>, ledger: Arc<dyn LedgerPort>, clock: Arc<dyn ClockPort>) -> Self {
         Self { releases, ledger, clock, governance: None }
     }
 
+    /// Enable optional governance reward accrual for the candidate's cosigners.
     pub fn with_governance(mut self, governance: Arc<AccrueGovernanceWork>) -> Self {
         self.governance = Some(governance);
         self
     }
 
+    /// Require release predicates and vault cosign quorum, then persist candidate and allowlist entry.
+    ///
+    /// Candidate state is saved before the allowlist entry, and optional reward
+    /// accrual runs afterward; these port operations are not wrapped in one transaction.
     pub fn execute(&self, release_id: &str) -> Result<AllowlistEntry, DomainError> {
         let mut candidate = self.releases.get_candidate(release_id)?;
         let policy = self.releases.policy()?;
@@ -189,19 +223,25 @@ impl ActivateRelease {
     }
 }
 
+/// Query use case for listing activated releases and requiring a binary hash to be admitted.
 pub struct GetAllowlist {
     releases: Arc<dyn ReleaseStorePort>,
 }
 
 impl GetAllowlist {
+    /// Create the allowlist query with the release store port.
     pub fn new(releases: Arc<dyn ReleaseStorePort>) -> Self {
         Self { releases }
     }
 
+    /// Return all currently stored allowlist entries.
     pub fn execute(&self) -> Result<Vec<AllowlistEntry>, DomainError> {
         self.releases.allowlist()
     }
 
+    /// Succeed only when `hb` appears in the active allowlist.
+    ///
+    /// Returns [`DomainError::NotAllowlisted`] with the hash when no entry admits it.
     pub fn require_hb(&self, hb: &ContentHash) -> Result<(), DomainError> {
         if self.releases.is_allowlisted_hb(hb)? {
             Ok(())

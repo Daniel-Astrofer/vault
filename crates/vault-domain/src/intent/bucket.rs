@@ -4,16 +4,26 @@ use std::collections::BTreeSet;
 
 use crate::DomainError;
 
+/// Treasury partition that scopes settlement funds, limits, and key usage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum BucketKind {
+    /// User-owned funds; the only bucket allowed to use the shared USERS Taproot key.
     Users,
+    /// Incoming profit before allocation into operational pools.
     Profit,
+    /// Pool reserved for bank-issued miner payouts.
     Miners,
+    /// Pool for channel operations and rebalancing.
     Channels,
+    /// Pool for infrastructure expenses.
     Infra,
 }
 
 impl BucketKind {
+    /// Parse a bucket name after trimming whitespace and ignoring ASCII case.
+    ///
+    /// Returns [`DomainError::InvalidBucket`] for any name outside the five
+    /// canonical bucket identifiers.
     pub fn parse(raw: &str) -> Result<Self, DomainError> {
         match raw.trim().to_ascii_uppercase().as_str() {
             "USERS" => Ok(Self::Users),
@@ -25,6 +35,7 @@ impl BucketKind {
         }
     }
 
+    /// Return the canonical uppercase identifier used in configuration and wire data.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Users => "USERS",
@@ -53,6 +64,8 @@ impl BucketKind {
 }
 
 /// Refuse client-chosen bucket escape against the shared mesh Taproot key (USERS-only).
+///
+/// Returns [`DomainError::InvalidIntent`] for every bucket except [`BucketKind::Users`].
 pub fn assert_shared_taproot_bucket(bucket: BucketKind) -> Result<(), DomainError> {
     if !bucket.may_use_shared_taproot_key() {
         return Err(DomainError::InvalidIntent(format!(
@@ -64,6 +77,8 @@ pub fn assert_shared_taproot_bucket(bucket: BucketKind) -> Result<(), DomainErro
 }
 
 /// CHANNELS Taproot spends must use the CHANNELS key — not USERS omnibus.
+///
+/// Returns [`DomainError::InvalidIntent`] for every bucket except [`BucketKind::Channels`].
 pub fn assert_channels_taproot_bucket(bucket: BucketKind) -> Result<(), DomainError> {
     if !bucket.may_use_channels_taproot_key() {
         return Err(DomainError::InvalidIntent(format!(
@@ -80,8 +95,11 @@ pub fn assert_channels_taproot_bucket(bucket: BucketKind) -> Result<(), DomainEr
 /// Current placeholders: miners=0 (lab) or p_reward (open), channels/infra = rest.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProfitSplits {
+    /// Share of profit credited to MINERS, in basis points.
     pub miners_bps: u32,
+    /// Share of profit credited to CHANNELS, in basis points.
     pub channels_bps: u32,
+    /// Share of profit credited to INFRA, in basis points.
     pub infra_bps: u32,
 }
 
@@ -109,6 +127,10 @@ impl ProfitSplits {
         Self::explicit(p_reward_bps, channels, infra)
     }
 
+    /// Require the three allocations to total exactly 10,000 basis points.
+    ///
+    /// Uses saturating addition, so an overflow cannot wrap into an apparently
+    /// valid split. Returns [`DomainError::InvalidConstitution`] otherwise.
     pub fn validate(&self) -> Result<(), DomainError> {
         let sum = self.miners_bps.saturating_add(self.channels_bps).saturating_add(self.infra_bps);
         if sum != 10_000 {
@@ -117,6 +139,10 @@ impl ProfitSplits {
         Ok(())
     }
 
+    /// Allocate satoshis according to these proportions using integer floor rounding.
+    ///
+    /// The INFRA allocation receives the remainder after MINERS and CHANNELS,
+    /// preserving the full input total even when the first two divisions round down.
     pub fn allocate(&self, profit_sats: u64) -> (u64, u64, u64) {
         let miners = profit_sats.saturating_mul(self.miners_bps as u64) / 10_000;
         let channels = profit_sats.saturating_mul(self.channels_bps as u64) / 10_000;
@@ -125,15 +151,24 @@ impl ProfitSplits {
     }
 }
 
+/// Destination and spend-limit rules for one treasury bucket.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BucketPolicy {
+    /// Bucket to which this policy and its limits apply.
     pub kind: BucketKind,
+    /// Maximum permitted amount for one settlement, in satoshis.
     pub max_per_tx_sats: u64,
+    /// Maximum cumulative amount permitted per day, in satoshis.
     pub max_per_day_sats: u64,
+    /// Exact destination strings admitted for this bucket.
     pub destination_allowlist: BTreeSet<String>,
 }
 
 impl BucketPolicy {
+    /// Construct a policy with caller-supplied caps and the bucket's lab destination tags.
+    ///
+    /// These opaque defaults support lab flows; production addresses still need
+    /// the relevant network validation at the service boundary.
     pub fn lab_defaults(kind: BucketKind, max_tx: u64, max_day: u64) -> Self {
         let mut destination_allowlist = BTreeSet::new();
         match kind {
@@ -158,6 +193,7 @@ impl BucketPolicy {
         Self { kind, max_per_tx_sats: max_tx, max_per_day_sats: max_day, destination_allowlist }
     }
 
+    /// Check exact membership in the configured destination allowlist.
     pub fn allows_destination(&self, dest: &str) -> bool {
         self.destination_allowlist.contains(dest)
     }
@@ -197,10 +233,15 @@ impl BucketPolicy {
 /// Settlement intent as seen by the vault enclave (mirrors contracts Intent fields).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SettlementIntent {
+    /// Unique identifier used for deduplication and replay protection by consumers.
     pub intent_id: String,
+    /// Treasury bucket whose policy governs this payment.
     pub bucket: BucketKind,
+    /// Exact registered destination receiving the funds.
     pub destination: String,
+    /// Requested transfer amount in satoshis; positivity and caps are checked at evaluation.
     pub amount_sats: u64,
+    /// Hash of the policy snapshot the issuer used to create this intent.
     pub policy_hash: String,
     /// Hybrid signature (Ed25519 + ML-DSA-65) over canonical intent hash.
     /// None = pre-hybrid intent (allowed if downgrade policy permits).
@@ -208,9 +249,16 @@ pub struct SettlementIntent {
 }
 
 impl SettlementIntent {
+    /// Maximum accepted UTF-8 byte length for an intent identifier.
     pub const MAX_ID_LEN: usize = 128;
+    /// Maximum accepted UTF-8 byte length for a destination string.
     pub const MAX_DEST_LEN: usize = 256;
 
+    /// Validate structural bounds and create an unsigned settlement intent.
+    ///
+    /// This checks identifier characters, destination path-like content, and
+    /// policy-hash length. It does not enforce the bucket allowlist, amount caps,
+    /// network address validity, or signature validity; those belong to subsequent gates.
     pub fn new(
         intent_id: impl Into<String>,
         bucket: BucketKind,
@@ -253,7 +301,17 @@ impl SettlementIntent {
     }
 }
 
-/// Pure gate: caps, allowlist, bucket isolation (no I/O).
+/// Apply pure settlement gates for bucket binding, policy version, limits, and destination.
+///
+/// `spent_today_sats` is the amount already charged to this bucket for the day;
+/// the requested amount is added with saturating arithmetic before comparison
+/// with the daily cap. CHANNELS alone accepts the explicit Bitcoin-address
+/// shape used by LND funding injection when the exact destination is not
+/// allowlisted; actual network/address validation is performed at the HTTP edge.
+/// This function performs no I/O and does not verify intent signatures.
+///
+/// Returns a domain error for policy mismatch, zero or over-cap amounts,
+/// protected bucket use, or a destination rejected by the applicable rule.
 pub fn evaluate_intent(
     intent: &SettlementIntent,
     policy: &BucketPolicy,
@@ -307,6 +365,10 @@ pub fn evaluate_intent(
     Ok(())
 }
 
+/// Apply the narrow address-prefix/length heuristic used by the CHANNELS exception.
+///
+/// This is not a checksum or network validator; callers that accept this shape
+/// must also use [`crate::validate_destination`] at the network boundary.
 fn is_explicit_bitcoin_address(destination: &str) -> bool {
     let destination = destination.trim().to_ascii_lowercase();
     (destination.starts_with("tb1")

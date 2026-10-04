@@ -14,12 +14,15 @@ use crate::signer::SignerError;
 
 /// DKG round 1 output for a single participant.
 pub struct DkgRound1Output {
+    /// Secret round-one state required to derive this participant's later rounds.
     pub secret_package: frost::keys::dkg::round1::SecretPackage,
+    /// Public round-one package to distribute to every other participant.
     pub public_package: frost::keys::dkg::round1::Package,
 }
 
 /// DKG round 2 output for a single participant.
 pub struct DkgRound2Output {
+    /// Secret round-two state consumed during finalization.
     pub secret_package: frost::keys::dkg::round2::SecretPackage,
     /// One encrypted/authenticated package per recipient. The caller must send
     /// each package only to the identifier that indexes it.
@@ -28,15 +31,20 @@ pub struct DkgRound2Output {
 
 /// Result of a completed DKG: key package and public key package.
 pub struct DkgResult {
+    /// This participant's secret signing package produced by DKG.
     pub key_package: frost::keys::KeyPackage,
+    /// Shared public package containing the group verifying key.
     pub pubkey_package: frost::keys::PublicKeyPackage,
 }
 
 /// Serialized DKG message for IPC transport.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DkgMessage {
+    /// Protocol round number represented by this message.
     pub round: u8,
+    /// Serialized participant identifier of the sender.
     pub sender: Vec<u8>,
+    /// Serialized round package payload; interpretation depends on `round`.
     pub payload: Vec<u8>,
 }
 
@@ -56,8 +64,8 @@ impl DkgParticipant {
 
     /// Execute DKG round 1.
     pub fn round1(&mut self) -> Result<DkgRound1Output, SignerError> {
-        let mut rng = OsRng;
-        let (secret, public) = frost::keys::dkg::part1(self.identifier, self.max_signers, self.min_signers, &mut rng)
+        let rng = OsRng;
+        let (secret, public) = frost::keys::dkg::part1(self.identifier, self.max_signers, self.min_signers, rng)
             .map_err(|e| SignerError::RoundError(format!("dkg round1 part1: {e}")))?;
 
         self.round1_secret = Some(secret.clone());
@@ -96,8 +104,6 @@ impl DkgParticipant {
 /// High-level DKG orchestrator that manages all participants (for in-process testing).
 pub struct DistributedKeyGeneration {
     participants: Vec<DkgParticipant>,
-    max_signers: u16,
-    min_signers: u16,
 }
 
 impl DistributedKeyGeneration {
@@ -114,7 +120,7 @@ impl DistributedKeyGeneration {
             })
             .collect();
 
-        Ok(Self { participants, max_signers, min_signers })
+        Ok(Self { participants })
     }
 
     /// Run the full DKG protocol in-process (all participants local).
@@ -184,16 +190,16 @@ mod tests {
         let mut commitments = BTreeMap::new();
         let mut nonces_list = Vec::new();
 
-        for i in 0..3 {
-            let (nonces, comm) = frost::round1::commit(results[i].key_package.signing_share(), &mut rng);
-            commitments.insert(*results[i].key_package.identifier(), comm);
-            nonces_list.push((*results[i].key_package.identifier(), nonces));
+        for result in results.iter().take(3) {
+            let (nonces, comm) = frost::round1::commit(result.key_package.signing_share(), &mut rng);
+            commitments.insert(*result.key_package.identifier(), comm);
+            nonces_list.push((*result.key_package.identifier(), nonces));
         }
 
         let mut shares = BTreeMap::new();
         let signing_package = frost::SigningPackage::new(commitments, message);
-        for (i, (id, nonces)) in nonces_list.iter().enumerate() {
-            let share = frost::round2::sign(&signing_package, nonces, &results[i].key_package).unwrap();
+        for ((id, nonces), result) in nonces_list.iter().zip(results.iter().take(3)) {
+            let share = frost::round2::sign(&signing_package, nonces, &result.key_package).unwrap();
             shares.insert(*id, share);
         }
 

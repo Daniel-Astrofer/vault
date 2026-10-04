@@ -64,6 +64,22 @@ fn financial_readiness_requires_live_constitution_threshold() {
     .execute()
     .unwrap();
     assert!(quorum.financial_ready);
+
+    let peers = Arc::new(InMemoryPeerDirectory::new());
+    let attestation = Arc::new(SimAttestationAdapter::new(b"lab"));
+    let missing_keysets = GetHealth::new(
+        NodeId::new("vault-1").unwrap(),
+        peers,
+        attestation,
+        kerosene_vault::domain::VaultNodeTier::Domestic,
+        false,
+    )
+    .with_constitution(3, 2)
+    .with_online_status(Arc::new(StaticOnlineCount { count: 3 }))
+    .with_financial_material_ready(false)
+    .execute()
+    .unwrap();
+    assert!(!missing_keysets.financial_ready);
 }
 
 #[test]

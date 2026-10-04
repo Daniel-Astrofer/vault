@@ -7,7 +7,8 @@
 //! - Refuse if any peer reports `already_seen` (cross-node double-spend).
 
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
+use std::time::Instant;
 
 use super::http_peer::PeerHttpSettings;
 use crate::application::ports::BucketLedgerPort;
@@ -18,20 +19,21 @@ use crate::{InMemoryBucketLedger, PersistedBucketLedger};
 /// Result of a peer durable Intent consume prepare.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IntentPrepareAck {
+    /// Whether the peer already reserved or consumed this Intent ID.
     pub already_seen: bool,
 }
 
 /// Transport used by [`QuorumBucketLedger`] to collect peer consume prepares.
 pub trait IntentConsumeQuorumTransport: Send + Sync {
-    /// Soft TTL reservation (reserve phase / HTTP ingest).
+    /// Requests soft-TTL reservations from peers during the reserve phase.
     fn prepare_on_peers(&self, intent_id: &str) -> Result<Vec<IntentPrepareAck>, DomainError>;
-    /// Durable burn promote (commit phase). Default: same as soft (lab/tests).
+    /// Requests durable consume claims during commit; defaults to soft prepare for lab transports.
     fn durable_prepare_on_peers(&self, intent_id: &str) -> Result<Vec<IntentPrepareAck>, DomainError> {
         self.prepare_on_peers(intent_id)
     }
 }
 
-/// HTTP peer prepare: POST `/v1/intent/consume/prepare`.
+/// HTTP peer prepare transport for `/v1/intent/consume/prepare`.
 pub struct HttpIntentConsumeTransport {
     peer_prepare_urls: Vec<String>,
     auth_token: Option<String>,
@@ -40,6 +42,7 @@ pub struct HttpIntentConsumeTransport {
 }
 
 impl HttpIntentConsumeTransport {
+    /// Creates the transport with peer HTTP policy and optional static-token authentication.
     pub fn with_peer_http(
         peer_prepare_urls: Vec<String>,
         auth_token: Option<String>,
@@ -48,6 +51,9 @@ impl HttpIntentConsumeTransport {
         Self { peer_prepare_urls, auth_token, peer_http, tls: None }
     }
 
+    /// Creates the transport with mTLS client credentials and peer verification policy.
+    ///
+    /// Static-token authentication is disabled for this configuration.
     pub fn with_mtls(
         peer_prepare_urls: Vec<String>,
         peer_http: PeerHttpSettings,
@@ -70,10 +76,12 @@ impl HttpIntentConsumeTransport {
 }
 
 impl IntentConsumeQuorumTransport for HttpIntentConsumeTransport {
+    /// Collects soft reservations from the configured peers.
     fn prepare_on_peers(&self, intent_id: &str) -> Result<Vec<IntentPrepareAck>, DomainError> {
         self.post_prepare(intent_id, false)
     }
 
+    /// Collects durable consume claims from the configured peers.
     fn durable_prepare_on_peers(&self, intent_id: &str) -> Result<Vec<IntentPrepareAck>, DomainError> {
         self.post_prepare(intent_id, true)
     }
@@ -81,46 +89,83 @@ impl IntentConsumeQuorumTransport for HttpIntentConsumeTransport {
 
 impl HttpIntentConsumeTransport {
     fn post_prepare(&self, intent_id: &str, durable: bool) -> Result<Vec<IntentPrepareAck>, DomainError> {
-        let mut out = Vec::with_capacity(self.peer_prepare_urls.len());
         if self.peer_prepare_urls.is_empty() {
-            return Ok(out);
+            return Ok(Vec::new());
         }
         let client = self.build_blocking_client()?;
         let body = serde_json::json!({ "intent_id": intent_id, "durable": durable }).to_string();
-        for url in &self.peer_prepare_urls {
-            let attempts = self.peer_http.max_retries.max(1);
-            let mut ack = None;
-            for attempt in 0..attempts {
-                let mut req = client.post(url).header("Content-Type", "application/json").body(body.clone());
-                if let Some(token) = self.auth_token.as_deref() {
-                    req = req.header("X-Vault-Token", token);
+        let peer_count = self.peer_prepare_urls.len();
+        let required = quorum_two_thirds(peer_count + 1).saturating_sub(1);
+        let (sender, receiver) = mpsc::channel();
+        for url in self.peer_prepare_urls.iter().cloned() {
+            let sender = sender.clone();
+            let client = client.clone();
+            let body = body.clone();
+            let token = self.auth_token.clone();
+            let settings = self.peer_http.clone();
+            std::thread::spawn(move || {
+                let result = post_intent_prepare(&client, &settings, &url, token.as_deref(), &body);
+                let _ = sender.send((url, result));
+            });
+        }
+        drop(sender);
+
+        let deadline = Instant::now() + self.peer_http.timeout;
+        let mut received = 0usize;
+        let mut out = Vec::with_capacity(required);
+        while received < peer_count && out.len() < required {
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                break;
+            };
+            match receiver.recv_timeout(remaining) {
+                Ok((_, Ok(Some(ack)))) => {
+                    received += 1;
+                    if ack.already_seen {
+                        return Ok(vec![ack]);
+                    }
+                    out.push(ack);
                 }
-                match req.send() {
-                    Ok(resp) if resp.status().is_success() => {
-                        let text = resp.text().unwrap_or_default();
-                        ack = Some(IntentPrepareAck { already_seen: parse_already_seen(&text)? });
-                        break;
-                    }
-                    Ok(resp) => {
-                        if !PeerHttpSettings::should_retry_status(resp.status()) || attempt + 1 >= attempts {
-                            break;
-                        }
-                        std::thread::sleep(self.peer_http.backoff_delay(attempt));
-                    }
-                    Err(_) => {
-                        if attempt + 1 >= attempts {
-                            break;
-                        }
-                        std::thread::sleep(self.peer_http.backoff_delay(attempt));
-                    }
+                Ok((_, Ok(None))) => received += 1,
+                Ok((url, Err(error))) => {
+                    received += 1;
+                    eprintln!("intent-consume peer {url} unavailable: {error}");
                 }
-            }
-            if let Some(a) = ack {
-                out.push(a);
+                Err(_) => break,
             }
         }
         Ok(out)
     }
+}
+
+fn post_intent_prepare(
+    client: &reqwest::blocking::Client,
+    settings: &PeerHttpSettings,
+    url: &str,
+    auth_token: Option<&str>,
+    body: &str,
+) -> Result<Option<IntentPrepareAck>, DomainError> {
+    let attempts = settings.max_retries.max(1);
+    for attempt in 0..attempts {
+        let mut req = client.post(url).header("Content-Type", "application/json").body(body.to_owned());
+        if let Some(token) = auth_token {
+            req = req.header("X-Vault-Token", token);
+        }
+        match req.send() {
+            Ok(resp) if resp.status().is_success() => {
+                let text = resp.text().unwrap_or_default();
+                return Ok(Some(IntentPrepareAck { already_seen: parse_already_seen(&text)? }));
+            }
+            Ok(resp) => {
+                if !PeerHttpSettings::should_retry_status(resp.status()) || attempt + 1 >= attempts {
+                    return Ok(None);
+                }
+            }
+            Err(_) if attempt + 1 >= attempts => return Ok(None),
+            Err(_) => {}
+        }
+        std::thread::sleep(settings.backoff_delay(attempt));
+    }
+    Ok(None)
 }
 
 fn parse_already_seen(body: &str) -> Result<bool, DomainError> {
@@ -139,6 +184,7 @@ pub struct MemoryIntentConsumeTransport {
 }
 
 impl MemoryIntentConsumeTransport {
+    /// Creates an in-memory transport for the supplied peer ledgers.
     pub fn new(peers: Vec<Arc<PersistedBucketLedger>>) -> Self {
         Self { peers }
     }
@@ -173,6 +219,10 @@ pub struct QuorumBucketLedger {
 }
 
 impl QuorumBucketLedger {
+    /// Wraps a local durable bucket ledger with remote prepare transport.
+    ///
+    /// The configured peer count determines the two-thirds quorum and should
+    /// match the transport's peer set.
     pub fn from_local(
         local: Arc<PersistedBucketLedger>,
         transport: Arc<dyn IntentConsumeQuorumTransport>,
@@ -183,18 +233,22 @@ impl QuorumBucketLedger {
         Self { local, transport, peer_count, quorum_t }
     }
 
+    /// Returns a shared handle to the local persisted bucket ledger.
     pub fn local_store(&self) -> Arc<PersistedBucketLedger> {
         self.local.clone()
     }
 
+    /// Returns the required prepare quorum, including this node.
     pub fn quorum_t(&self) -> usize {
         self.quorum_t
     }
 
+    /// Returns the configured remote peer count, excluding this node.
     pub fn peer_count(&self) -> usize {
         self.peer_count
     }
 
+    /// Persists destination allowlists for the selected bucket kind.
     pub fn admit_destinations(
         &self,
         kind: BucketKind,
@@ -203,32 +257,14 @@ impl QuorumBucketLedger {
         self.local.admit_destinations(kind, dests)
     }
 
-    /// Peer prepare path (HTTP ingest). Soft TTL reservation (not durable burn).
+    /// Creates a local soft reservation for a remotely requested Intent.
     pub fn prepare_remote(&self, intent_id: &str) -> Result<bool, DomainError> {
         self.local.prepare_soft(intent_id)
     }
 
-    /// Durable peer prepare (commit / claim fan-out).
+    /// Creates a local durable consume claim for a remotely requested Intent.
     pub fn prepare_remote_durable(&self, intent_id: &str) -> Result<bool, DomainError> {
         self.local.prepare_consume(intent_id)
-    }
-
-    /// Soft-reserve locally + soft peer prepare. Fail-closed on unmet quorum.
-    fn claim_reserve(&self, intent_id: &str) -> Result<(), DomainError> {
-        if self.local.prepare_soft(intent_id)? {
-            return Err(DomainError::IntentReplay(intent_id.to_string()));
-        }
-        let acks = self.transport.prepare_on_peers(intent_id)?;
-        if acks.iter().any(|a| a.already_seen) {
-            return Err(DomainError::IntentReplay(format!("intent seen on ≥1 peer: {intent_id}")));
-        }
-        let have = 1 + acks.len();
-        if have < self.quorum_t {
-            // Roll back local soft reserve.
-            let _ = self.local.release_reservation(intent_id, BucketKind::Users, 0);
-            return Err(DomainError::QuorumNotMet { have, need: self.quorum_t });
-        }
-        Ok(())
     }
 
     /// Local durable burn + quorum peer durable prepare. Fail-closed on unmet quorum /
@@ -250,34 +286,45 @@ impl QuorumBucketLedger {
 }
 
 impl BucketLedgerPort for QuorumBucketLedger {
+    /// Returns the local policy for a bucket kind.
     fn policy(&self, kind: BucketKind) -> Result<BucketPolicy, DomainError> {
         self.local.policy(kind)
     }
 
+    /// Returns today's recorded spend for a bucket kind.
     fn spent_today(&self, kind: BucketKind) -> Result<u64, DomainError> {
         self.local.spent_today(kind)
     }
 
+    /// Records a local spend amount for a bucket kind.
     fn record_spend(&self, kind: BucketKind, amount_sats: u64) -> Result<(), DomainError> {
         self.local.record_spend(kind, amount_sats)
     }
 
+    /// Checks whether the local ledger has durably consumed an Intent ID.
     fn is_consumed(&self, intent_id: &str) -> Result<bool, DomainError> {
         self.local.is_consumed(intent_id)
     }
 
+    /// Consumes an Intent ID using the same quorum claim path as `try_consume`.
     fn mark_consumed(&self, intent_id: &str) -> Result<(), DomainError> {
         self.try_consume(intent_id)
     }
 
+    /// Durably consumes the Intent locally and requires peer quorum.
     fn try_consume(&self, intent_id: &str) -> Result<(), DomainError> {
         self.claim_consume(intent_id)
     }
 
+    /// Reports whether the local ledger currently holds a reservation for an Intent.
     fn has_reservation(&self, intent_id: &str) -> Result<bool, DomainError> {
         Ok(self.local.has_reservation(intent_id))
     }
 
+    /// Validates bucket policy, reserves local spend, and gathers soft peer reservations.
+    ///
+    /// The local reservation is released when a peer reports replay or quorum
+    /// is unmet. A transport error propagates after local reservation creation.
     fn reserve_spend(
         &self,
         intent_id: &str,
@@ -315,6 +362,7 @@ impl BucketLedgerPort for QuorumBucketLedger {
         Ok(())
     }
 
+    /// Promotes a reservation to a durable consume quorum; repeated local commits are idempotent.
     fn commit_consume(&self, intent_id: &str) -> Result<(), DomainError> {
         if self.local.is_consumed(intent_id)? {
             // Idempotent commit retry (CHANNELS open-ok / commit-fail outbox).
@@ -324,10 +372,12 @@ impl BucketLedgerPort for QuorumBucketLedger {
         self.claim_consume(intent_id)
     }
 
+    /// Releases the local reservation and refunds its reserved spend amount.
     fn release_reservation(&self, intent_id: &str, kind: BucketKind, amount_sats: u64) -> Result<(), DomainError> {
         self.local.release_reservation(intent_id, kind, amount_sats)
     }
 
+    /// Reserves spend, validates it, then durably consumes the Intent across the quorum.
     fn authorize_spend_and_consume(
         &self,
         intent_id: &str,

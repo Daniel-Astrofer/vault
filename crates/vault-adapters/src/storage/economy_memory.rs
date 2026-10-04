@@ -19,37 +19,45 @@ use crate::domain::{
     ProfitSplitAccrual, ProfitSplits, RewardPolicy,
 };
 
+/// Mutex-protected economy state for tests and non-persistent process use.
 pub struct InMemoryEconomy {
     inner: Mutex<EconomyState>,
 }
 
 impl InMemoryEconomy {
+    /// Wraps an existing economy state in a synchronized in-memory adapter.
     pub fn new(state: EconomyState) -> Self {
         Self { inner: Mutex::new(state) }
     }
 
+    /// Creates an in-memory economy using the domain's open-state defaults.
     pub fn open() -> Self {
         Self::new(EconomyState::new_open())
     }
 }
 
 impl EconomyPort for InMemoryEconomy {
+    /// Returns a cloned point-in-time economy state.
     fn snapshot(&self) -> Result<EconomyState, DomainError> {
         Ok(lock_mutex(&self.inner, "economy")?.clone())
     }
 
+    /// Inserts or updates an operator in the in-memory state.
     fn upsert_operator(&self, op: MinerOperator) -> Result<(), DomainError> {
         lock_mutex(&self.inner, "economy")?.upsert_operator(op)
     }
 
+    /// Accrues profit under the supplied reward basis-point rate.
     fn accrue_from_profit(&self, profit_sats: u64, p_reward_bps: u32) -> Result<u64, DomainError> {
         Ok(lock_mutex(&self.inner, "economy")?.accrue_from_profit(profit_sats, p_reward_bps))
     }
 
+    /// Distributes profit according to the configured profit split and returns the accrual breakdown.
     fn accrue_profit_splits(&self, profit_sats: u64, splits: &ProfitSplits) -> Result<ProfitSplitAccrual, DomainError> {
         lock_mutex(&self.inner, "economy")?.accrue_profit_splits(profit_sats, splits)
     }
 
+    /// Accrues governance reward credits for the specified job participants.
     fn accrue_governance_job(
         &self,
         job: GovernanceJobKind,
@@ -59,27 +67,38 @@ impl EconomyPort for InMemoryEconomy {
         Ok(lock_mutex(&self.inner, "economy")?.accrue_governance_job(job, participants, config))
     }
 
+    /// Proposes an equal payout split without mutating pool state.
     fn propose_equal_payouts(&self, amount: u64) -> Result<Vec<crate::domain::MinerPayoutShare>, DomainError> {
         lock_mutex(&self.inner, "economy")?.propose_equal_payouts(amount)
     }
 
+    /// Debits the miner pool according to domain-state validation.
     fn debit_pool(&self, amount: u64) -> Result<(), DomainError> {
         lock_mutex(&self.inner, "economy")?.debit_pool(amount)
     }
 
+    /// Records payout time and optional ledger epoch in the in-memory state.
     fn record_miner_payout(&self, at_secs: u64, epoch: Option<u64>) -> Result<(), DomainError> {
         lock_mutex(&self.inner, "economy")?.record_miner_payout(at_secs, epoch);
         Ok(())
     }
 }
 
-/// Process-local durable economy snapshot (atomic JSON + fsync).
+/// Process-local economy snapshot persisted as atomic JSON with fsync.
+///
+/// The snapshot survives restart on this host but is not a replicated or
+/// authenticated append-only mesh ledger.
 pub struct PersistedEconomy {
     path: PathBuf,
     inner: Mutex<EconomyState>,
 }
 
 impl PersistedEconomy {
+    /// Opens and loads the snapshot, or initializes open-state defaults when absent.
+    ///
+    /// The loaded/default state is immediately written back atomically. This
+    /// adapter persists each mutating operation but does not persist spend
+    /// proposals that only read current state.
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, DomainError> {
         let path = path.into();
         let state = if path.exists() { load_economy(&path)? } else { EconomyState::new_open() };
@@ -97,27 +116,32 @@ impl PersistedEconomy {
 }
 
 impl EconomyPort for PersistedEconomy {
+    /// Returns a cloned point-in-time economy state.
     fn snapshot(&self) -> Result<EconomyState, DomainError> {
         Ok(lock_mutex(&self.inner, "economy")?.clone())
     }
 
+    /// Inserts or updates an operator and persists the resulting snapshot.
     fn upsert_operator(&self, op: MinerOperator) -> Result<(), DomainError> {
         lock_mutex(&self.inner, "economy")?.upsert_operator(op)?;
         self.persist()
     }
 
+    /// Accrues a profit reward and persists the updated state.
     fn accrue_from_profit(&self, profit_sats: u64, p_reward_bps: u32) -> Result<u64, DomainError> {
         let got = lock_mutex(&self.inner, "economy")?.accrue_from_profit(profit_sats, p_reward_bps);
         self.persist()?;
         Ok(got)
     }
 
+    /// Accrues the configured profit split and persists the updated state.
     fn accrue_profit_splits(&self, profit_sats: u64, splits: &ProfitSplits) -> Result<ProfitSplitAccrual, DomainError> {
         let got = lock_mutex(&self.inner, "economy")?.accrue_profit_splits(profit_sats, splits)?;
         self.persist()?;
         Ok(got)
     }
 
+    /// Accrues governance credits and persists the updated state.
     fn accrue_governance_job(
         &self,
         job: GovernanceJobKind,
@@ -129,15 +153,18 @@ impl EconomyPort for PersistedEconomy {
         Ok(got)
     }
 
+    /// Proposes equal payouts without persisting because it does not mutate state.
     fn propose_equal_payouts(&self, amount: u64) -> Result<Vec<crate::domain::MinerPayoutShare>, DomainError> {
         lock_mutex(&self.inner, "economy")?.propose_equal_payouts(amount)
     }
 
+    /// Debits the pool and persists the resulting state.
     fn debit_pool(&self, amount: u64) -> Result<(), DomainError> {
         lock_mutex(&self.inner, "economy")?.debit_pool(amount)?;
         self.persist()
     }
 
+    /// Records payout metadata and persists the resulting state.
     fn record_miner_payout(&self, at_secs: u64, epoch: Option<u64>) -> Result<(), DomainError> {
         lock_mutex(&self.inner, "economy")?.record_miner_payout(at_secs, epoch);
         self.persist()

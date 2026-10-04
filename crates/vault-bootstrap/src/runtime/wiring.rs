@@ -8,8 +8,8 @@ use crate::adapters::{
     HttpAntiNonceTransport, HttpDayVoteTransport, HttpIntentConsumeTransport, HttpTrCosignTransport, HybridIdentity,
     InMemoryLedger, InMemoryPeerDirectory, MutualTlsAuthAdapter, PersistedBucketLedger, PersistedEconomy,
     PersistedReleaseMesh, PolicyReshareHook, QuorumAntiNonce, QuorumBucketLedger, QuorumDailyRotation, SharedAntiNonce,
-    SimAttestationAdapter, SystemClock, TeeAttestationAdapter, TeeSealAdapter, ThresholdVaultState, TrCosignPeerState,
-    TrCosignTransport, TrWireDkgHub, WireDkgHub, WireDkgPeerAuth,
+    SimAttestationAdapter, SystemClock, TeeAttestationAdapter, TeeSealAdapter, ThresholdVaultState, TrCosignKeyset,
+    TrCosignPeerState, TrCosignTransport, TrDkgKeyset, TrWireDkgHub, WireDkgHub, WireDkgPeerAuth,
 };
 #[cfg(feature = "dealer_lab")]
 use crate::adapters::{
@@ -27,60 +27,133 @@ use crate::domain::{
 };
 use crate::{CeremonyMode, DkgMode, ShareStoreMode, VaultConfig};
 
+#[cfg(feature = "dealer_lab")]
+type DkgWiringBundle = (
+    Arc<dyn DkgPort>,
+    Option<Arc<FrostSignOrchestrator>>,
+    Option<Arc<FrostTrBitcoinOrchestrator>>,
+    Option<Arc<FrostTrBitcoinOrchestrator>>,
+);
+#[cfg(not(feature = "dealer_lab"))]
+type DkgWiringBundle = (
+    Arc<dyn DkgPort>,
+    Option<Arc<FrostSignOrchestrator>>,
+    Option<Arc<FrostTrBitcoinOrchestrator>>,
+    Option<Arc<FrostTrBitcoinOrchestrator>>,
+);
+type DistributedDkgBundle = (Arc<dyn DkgPort>, Option<Arc<FrostSignOrchestrator>>);
+
+/// Fully wired process runtime for one vault node.
+///
+/// The value owns the concrete in-process adapters and exposes the application
+/// use cases and ports consumed by the HTTP server. It is constructed once at
+/// startup after validating configuration and seating the genesis roster.
 pub struct VaultRuntime {
+    /// Validated startup configuration retained for server and operational use.
     pub config: VaultConfig,
     /// Genesis / wire-DKG roster after SEV-priority seating (§3.1).
     pub genesis_roster: Vec<NodeId>,
     /// Hybrid cryptographic identity (Ed25519 + ML-DSA-65 + X25519 + ML-KEM-768).
     pub hybrid_identity: Option<HybridIdentity>,
+    /// Health use case, including roster, attestation, and online status.
     pub get_health: GetHealth,
+    /// Metrics snapshot use case for ledger and bucket activity.
     pub get_metrics: GetMetrics,
+    /// Peer liveness and attestation ping use case.
     pub ping_peer: PingPeer,
+    /// Ledger snapshot query use case.
     pub get_ledger: GetLedgerSnapshot,
+    /// Use case that proposes advancing the ledger epoch.
     pub propose_epoch: ProposeEpochAdvance,
+    /// Use case that records this node's vote for an epoch advance.
     pub vote_epoch: VoteEpochAdvance,
+    /// Threshold signing use case for general vault messages.
     pub sign_message: SignMessage,
+    /// Use case that stores a proposed software release and its blobs.
     pub propose_release: ProposeRelease,
+    /// Use case that rebuilds release artifacts from stored inputs.
     pub rebuild_release: RebuildRelease,
+    /// Use case that records a council co-signature for a release.
     pub cosign_release: CosignRelease,
+    /// Use case that activates a release after policy checks.
     pub activate_release: ActivateRelease,
+    /// Query use case for the release destination allowlist.
     pub get_allowlist: GetAllowlist,
+    /// Intent authorization use case backed by bucket and ledger policies.
     pub gate_intent: GateIntent,
+    /// Use case that allocates recognized profit in the ledger.
     pub allocate_profit: AllocateProfit,
+    /// Query use case for persisted economy and miner status.
     pub get_economy: GetEconomyStatus,
+    /// Use case for adding or updating a miner record.
     pub upsert_miner: UpsertMiner,
+    /// Use case that accrues miner rewards from ledger activity.
     pub accrue_rewards: AccrueMinerRewards,
+    /// Use case that proposes the next miner payout batch.
     pub propose_miner_payouts: ProposeMinerPayouts,
+    /// In-memory peer directory populated from configured seed peers.
     pub peers: Arc<InMemoryPeerDirectory>,
+    /// In-memory ledger initialized from the genesis constitution and roster.
     pub ledger: Arc<InMemoryLedger>,
+    /// Threshold key material and local share used by signing operations.
     pub threshold: Arc<ThresholdVaultState>,
+    /// Online peer-count implementation, static or actively probed.
     pub online: Arc<dyn OnlineStatusPort>,
+    /// Persisted release metadata and blob storage adapter.
     pub release_mesh: Arc<PersistedReleaseMesh>,
+    /// Bucket ledger enforcing local and peer-quorum intent consumption.
     pub buckets: Arc<QuorumBucketLedger>,
+    /// Persisted economy and miner accounting adapter.
     pub economy: Arc<PersistedEconomy>,
+    /// Authentication adapter used to authorize inbound vault operations.
     pub auth: Arc<dyn VaultAuthPort>,
+    /// Protected storage port for threshold signing shares.
     pub share_store: Arc<dyn ShareStorePort>,
+    /// DKG implementation selected by the runtime configuration and features.
     pub dkg: Arc<dyn DkgPort>,
+    /// Daily epoch rotation implementation with peer voting and reshare hooks.
     pub daily_rotation: Arc<dyn DailyRotationPort>,
+    /// Policy-controlled hook for re-sharing threshold material.
     pub reshare_hook: Arc<dyn ReshareHookPort>,
+    /// Mutable slot holding the general-purpose FROST signing shares.
     pub frost_shares: Arc<FrostShareSlot>,
+    /// Replay-protection port shared by signing and co-signing flows.
     pub anti_nonce: Arc<dyn AntiNoncePort>,
     /// Present after dealer_lab or distributed FROST DKG keygen.
     pub frost: Option<Arc<FrostSignOrchestrator>>,
     /// Taproot BIP-340 FROST keyset for on-chain PSBT / sighash signing (USERS omnibus).
     pub frost_tr: Option<Arc<FrostTrBitcoinOrchestrator>>,
+    /// Mutable slot holding the USERS Taproot FROST shares.
     pub frost_tr_shares: Arc<FrostTrShareSlot>,
     /// Dedicated CHANNELS Taproot keyset (≠ USERS omnibus).
     pub frost_tr_channels: Option<Arc<FrostTrBitcoinOrchestrator>>,
+    /// Mutable slot holding the separate CHANNELS Taproot FROST shares.
     pub frost_tr_channels_shares: Arc<FrostTrShareSlot>,
     /// Peer helper for over-wire TR FROST co-sign rounds.
     pub tr_cosign_peer: Arc<TrCosignPeerState>,
+    /// Peer helper for the independent CHANNELS Taproot co-sign rounds.
+    pub tr_channels_cosign_peer: Arc<TrCosignPeerState>,
     /// Over-wire DKG hub (HTTP round exchange between peers).
     pub wire_dkg: Arc<WireDkgHub>,
+    /// USERS Taproot DKG hub (legacy `/v1/dkg/tr/*` routes).
     pub tr_wire_dkg: Arc<TrWireDkgHub>,
+    /// CHANNELS Taproot DKG hub with an independent transcript and share namespace.
+    pub tr_channels_wire_dkg: Arc<TrWireDkgHub>,
 }
 
 impl VaultRuntime {
+    /// Validates configuration and assembles the node's adapters and use cases.
+    ///
+    /// This initializes the genesis roster and ledger, local threshold state,
+    /// persistence adapters, authenticated peer transports, and the configured
+    /// DKG/signing components. Invalid policy, missing local seating, unavailable
+    /// credentials, or adapter initialization failures are returned as a domain
+    /// error; no partially wired runtime is returned.
+    ///
+    /// # Errors
+    /// Returns [`DomainError`] when configuration validation, genesis setup,
+    /// credential loading, storage initialization, or transport construction
+    /// fails.
     pub fn build(config: VaultConfig) -> Result<Self, DomainError> {
         config.validate_attestation_policy()?;
         config.validate_hygiene()?;
@@ -311,6 +384,7 @@ impl VaultRuntime {
             }
         };
 
+        let (cert, key, ca) = config.require_mtls_client_identity()?;
         let mut peer_bases: Vec<(String, String)> = Vec::new();
         for (id, addr) in &config.seed_peers {
             let base = if addr.starts_with("http://") || addr.starts_with("https://") {
@@ -327,14 +401,19 @@ impl VaultRuntime {
         let peer_count = peer_bases.len();
         // High #7: probe peer /v1/health; unreachable peers do not count as online.
         if !(config.online_static || (matches!(config.ceremony_mode, CeremonyMode::Lab) && peer_count == 0)) {
-            let peer_health: Vec<String> = peer_bases.iter().map(|(_, b)| format!("{b}/v1/health")).collect();
-            online = Arc::new(ProbedOnlineCount::new(
+            // Probe a local-only endpoint. Probing `/v1/health` here would recurse
+            // because peer health itself computes quorum liveness.
+            let peer_health: Vec<String> = peer_bases.iter().map(|(_, b)| format!("{b}/v1/live")).collect();
+            online = Arc::new(ProbedOnlineCount::with_mtls(
                 peers.clone(),
                 peer_health,
                 config.peer_http.clone(),
-                None,
+                std::path::Path::new(cert),
+                std::path::Path::new(key),
+                std::path::Path::new(ca),
+                &config.tls_verify_policy,
                 config.online_count,
-            ));
+            )?);
             sign_message = SignMessage::new(threshold.clone(), online.clone());
         }
         let peer_prepare: Vec<String> = peer_bases.iter().map(|(_, b)| format!("{b}/v1/anti-nonce/prepare")).collect();
@@ -343,7 +422,6 @@ impl VaultRuntime {
         let day_vote_peers: Vec<(String, String)> =
             peer_bases.iter().map(|(id, b)| (id.clone(), format!("{b}/v1/day/vote"))).collect();
 
-        let (cert, key, ca) = config.require_mtls_client_identity()?;
         let anti_transport = Arc::new(HttpAntiNonceTransport::with_mtls(
             peer_prepare,
             config.peer_http.clone(),
@@ -422,32 +500,53 @@ impl VaultRuntime {
             peer_auth.clone(),
             config.peer_http.clone(),
         )?);
-        let tr_wire_dkg = Arc::new(TrWireDkgHub::with_peer_http(
+        let tr_wire_dkg = Arc::new(TrWireDkgHub::with_peer_http_for_keyset(
+            config.node_id.as_str().to_string(),
+            peer_addrs.clone(),
+            peer_auth.clone(),
+            config.peer_http.clone(),
+            TrDkgKeyset::Users,
+        )?);
+        let tr_channels_wire_dkg = Arc::new(TrWireDkgHub::with_peer_http_for_keyset(
             config.node_id.as_str().to_string(),
             peer_addrs,
             peer_auth,
             config.peer_http.clone(),
+            TrDkgKeyset::Channels,
         )?);
 
         // Taproot FROST co-sign transport always uses peer mTLS.
         let tr_cosign_peers: Vec<(String, String)> = peer_bases.iter().map(|(id, b)| (id.clone(), b.clone())).collect();
-        let tr_cosign_transport: Arc<dyn TrCosignTransport> = Arc::new(HttpTrCosignTransport::with_mtls(
-            tr_cosign_peers,
+        let tr_cosign_transport: Arc<dyn TrCosignTransport> = Arc::new(HttpTrCosignTransport::with_mtls_for_keyset(
+            tr_cosign_peers.clone(),
             config.peer_http.clone(),
             std::path::Path::new(cert),
             std::path::Path::new(key),
             std::path::Path::new(ca),
             &config.tls_verify_policy,
+            TrCosignKeyset::Users,
         )?);
-        let tr_cosign_peer = Arc::new(TrCosignPeerState::new(config.node_id.as_str(), frost_tr_shares.clone()));
+        let tr_channels_cosign_transport: Arc<dyn TrCosignTransport> =
+            Arc::new(HttpTrCosignTransport::with_mtls_for_keyset(
+                tr_cosign_peers,
+                config.peer_http.clone(),
+                std::path::Path::new(cert),
+                std::path::Path::new(key),
+                std::path::Path::new(ca),
+                &config.tls_verify_policy,
+                TrCosignKeyset::Channels,
+            )?);
+        let tr_cosign_peer = Arc::new(
+            TrCosignPeerState::new(config.node_id.as_str(), frost_tr_shares.clone())
+                .with_anti_nonce(Box::new(SharedAntiNonce(anti_nonce.clone()))),
+        );
+        let tr_channels_cosign_peer = Arc::new(
+            TrCosignPeerState::new(config.node_id.as_str(), frost_tr_channels_shares.clone())
+                .with_anti_nonce(Box::new(SharedAntiNonce(anti_nonce.clone()))),
+        );
 
         #[cfg(feature = "dealer_lab")]
-        let (dkg, frost, frost_tr, frost_tr_channels): (
-            Arc<dyn DkgPort>,
-            Option<Arc<FrostSignOrchestrator>>,
-            Option<Arc<FrostTrBitcoinOrchestrator>>,
-            Option<Arc<FrostTrBitcoinOrchestrator>>,
-        ) = {
+        let (dkg, frost, frost_tr, frost_tr_channels): DkgWiringBundle = {
             if config.dealer_requested && matches!(config.ceremony_mode, CeremonyMode::Lab) && !config.hardened {
                 dealer_fatal_banner();
                 let adapter = DealerLabAdapter::new();
@@ -511,7 +610,7 @@ impl VaultRuntime {
                     config.bitcoin_network,
                 )
                 .with_psbt_policy(config.psbt_policy)
-                .with_wire_cosign(config.node_id.as_str(), true, tr_cosign_transport.clone());
+                .with_wire_cosign(config.node_id.as_str(), true, tr_channels_cosign_transport.clone());
                 (Arc::new(adapter), Some(Arc::new(orch)), Some(Arc::new(tr_orch)), Some(Arc::new(tr_ch_orch)))
             } else if matches!(config.dkg_mode, DkgMode::DistributedWire) {
                 // Over-wire ceremony via /v1/dkg/round{1,2,3}; no in-process dealer/sim.
@@ -561,7 +660,7 @@ impl VaultRuntime {
                             .with_wire_cosign(
                                 config.node_id.as_str(),
                                 false,
-                                tr_cosign_transport.clone(),
+                                tr_channels_cosign_transport.clone(),
                             ),
                         ))
                     }
@@ -584,12 +683,7 @@ impl VaultRuntime {
         };
 
         #[cfg(not(feature = "dealer_lab"))]
-        let (dkg, frost, frost_tr, frost_tr_channels): (
-            Arc<dyn DkgPort>,
-            Option<Arc<FrostSignOrchestrator>>,
-            Option<Arc<FrostTrBitcoinOrchestrator>>,
-            Option<Arc<FrostTrBitcoinOrchestrator>>,
-        ) = {
+        let (dkg, frost, frost_tr, frost_tr_channels): DkgWiringBundle = {
             if config.dealer_requested || matches!(config.dkg_mode, DkgMode::DealerLab) {
                 return Err(DomainError::DealerForbidden("dealer DKG not compiled (build without dealer_lab)".into()));
             }
@@ -639,7 +733,7 @@ impl VaultRuntime {
                             .with_wire_cosign(
                                 config.node_id.as_str(),
                                 false,
-                                tr_cosign_transport.clone(),
+                                tr_channels_cosign_transport.clone(),
                             ),
                         ))
                     }
@@ -670,7 +764,8 @@ impl VaultRuntime {
         )
         .with_peer_probe(!config.online_static && peer_count > 0)
         .with_constitution(configured_members, required_threshold)
-        .with_online_status(online.clone());
+        .with_online_status(online.clone())
+        .with_financial_material_ready(frost_tr.is_some() && frost_tr_channels.is_some());
         let get_metrics = GetMetrics::new(config.node_id.clone(), ledger_port.clone(), Some(bucket_port.clone()));
         let ping_peer = PingPeer::new(peers_port, attestation, clock.clone(), measurement);
         let get_ledger = GetLedgerSnapshot::new(ledger_port.clone());
@@ -755,8 +850,10 @@ impl VaultRuntime {
             frost_tr_channels,
             frost_tr_channels_shares,
             tr_cosign_peer,
+            tr_channels_cosign_peer,
             wire_dkg,
             tr_wire_dkg,
+            tr_channels_wire_dkg,
         })
     }
 }
@@ -768,7 +865,7 @@ fn wire_distributed_dkg(
     rotation: Arc<dyn DailyRotationPort>,
     shares: Arc<FrostShareSlot>,
     anti_nonce: Arc<dyn AntiNoncePort>,
-) -> Result<(Arc<dyn DkgPort>, Option<Arc<FrostSignOrchestrator>>), DomainError> {
+) -> Result<DistributedDkgBundle, DomainError> {
     let max = n.min(u16::MAX as usize) as u16;
     let min = t.min(u16::MAX as usize) as u16;
     let max = max.max(2);

@@ -20,14 +20,23 @@ use crate::domain::{DomainError, NodeId};
 /// Persisted hybrid identity for a vault node.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HybridIdentity {
+    /// Mesh node identifier associated with this key material.
     pub node_id: NodeId,
+    /// Ed25519 signing public key bytes.
     pub ed25519_public: [u8; 32],
+    /// Ed25519 signing seed; treat as secret key material.
     pub ed25519_secret: [u8; 32],
+    /// ML-DSA-65 signing public key bytes.
     pub ml_dsa65_public: Vec<u8>,
+    /// ML-DSA-65 signing secret key bytes.
     pub ml_dsa65_secret: Vec<u8>,
+    /// X25519 transport public key bytes.
     pub x25519_public: [u8; 32],
+    /// X25519 transport secret bytes; treat as secret key material.
     pub x25519_secret: [u8; 32],
+    /// ML-KEM-768 transport public key bytes.
     pub ml_kem768_public: Vec<u8>,
+    /// ML-KEM-768 transport secret key bytes.
     pub ml_kem768_secret: Vec<u8>,
     /// Unix epoch seconds when identity was created.
     pub created_at: u64,
@@ -36,19 +45,30 @@ pub struct HybridIdentity {
 }
 
 impl HybridIdentity {
+    /// Share-store key for the Ed25519 public key.
     pub const ED25519_PUB_ID: &'static str = "identity-ed25519-pub";
+    /// Share-store key for the Ed25519 secret seed.
     pub const ED25519_SEC_ID: &'static str = "identity-ed25519-sec";
+    /// Share-store key for the ML-DSA-65 public key.
     pub const ML_DSA65_PUB_ID: &'static str = "identity-ml-dsa65-pub";
+    /// Share-store key for the ML-DSA-65 secret key.
     pub const ML_DSA65_SEC_ID: &'static str = "identity-ml-dsa65-sec";
+    /// Share-store key for the X25519 public key.
     pub const X25519_PUB_ID: &'static str = "identity-x25519-pub";
+    /// Share-store key for the X25519 secret key.
     pub const X25519_SEC_ID: &'static str = "identity-x25519-sec";
+    /// Share-store key for the ML-KEM-768 public key.
     pub const ML_KEM768_PUB_ID: &'static str = "identity-ml-kem768-pub";
+    /// Share-store key for the ML-KEM-768 secret key.
     pub const ML_KEM768_SEC_ID: &'static str = "identity-ml-kem768-sec";
 
-    /// Generate a fresh hybrid identity for a vault at genesis.
+    /// Generates new signing and transport key material for a vault node.
     ///
-    /// Uses `vault_identity_core` for the Ed25519 and ML-DSA-65 key material.
-    /// Transport keys (X25519, ML-KEM-768) are generated here directly.
+    /// Ed25519 and ML-DSA-65 signing keys come from `vault_identity_core`;
+    /// X25519 bytes are generated locally. The current ML-KEM-768 code fills
+    /// correctly sized buffers with random bytes as a placeholder and does not
+    /// perform ML-KEM key generation, so those fields must not be treated as a
+    /// usable KEM key pair.
     pub fn genesis(node_id: NodeId) -> Result<Self, DomainError> {
         let mut rng = OsRng;
         use rand::RngCore;
@@ -68,7 +88,7 @@ impl HybridIdentity {
         // X25519 transport key (classical) — raw random bytes.
         let mut x_sec_bytes = [0u8; 32];
         rng.fill_bytes(&mut x_sec_bytes);
-        let x_secret = x25519_dalek::EphemeralSecret::random_from_rng(&mut rng);
+        let x_secret = x25519_dalek::EphemeralSecret::random_from_rng(rng);
         let x_public = x25519_dalek::PublicKey::from(&x_secret);
         let x_pub_bytes: [u8; 32] = *x_public.as_bytes();
 
@@ -100,6 +120,7 @@ impl HybridIdentity {
     }
 
     /// Returns the peer identity (public keys only) for inclusion in the roster.
+    /// Secret keys are deliberately omitted from the peer-facing roster record.
     pub fn to_peer_identity(&self) -> crate::domain::PeerIdentity {
         crate::domain::PeerIdentity {
             node_id: self.node_id.clone(),
@@ -115,25 +136,17 @@ impl HybridIdentity {
     // Seed persistence via ShareStorePort
     // -----------------------------------------------------------------------
 
-    /// Build the share_id for a specific seed.
+    /// Builds the per-node share-store ID for a secret or public key blob.
     fn seed_share_id(node_id: &str, label: &str) -> String {
         format!("identity/{label}/{node_id}")
     }
 
-    /// Build AAD for seed anti-swap binding.
-    fn seed_aad(share_id: &str, node_id: &str, key_epoch: u64) -> Vec<u8> {
-        let mut aad = Vec::with_capacity(share_id.len() + node_id.len() + 24);
-        aad.extend_from_slice(b"kerosene-vault-seed-aad-v1|");
-        aad.extend_from_slice(share_id.as_bytes());
-        aad.push(b'|');
-        aad.extend_from_slice(node_id.as_bytes());
-        aad.push(b'|');
-        aad.extend_from_slice(key_epoch.to_le_bytes().as_ref());
-        aad
-    }
-
-    /// Persist all secret and public key material to a ShareStorePort.
-    pub fn persist_seeds(&self, store: &dyn ShareStorePort, key_epoch: u64) -> Result<(), DomainError> {
+    /// Persists supported signing and transport key blobs to the share store.
+    ///
+    /// Secret and public values use per-node `identity/{label}/{node_id}` IDs.
+    /// The key epoch argument is currently unused; errors from the store stop
+    /// the operation, which may have written earlier entries already.
+    pub fn persist_seeds(&self, store: &dyn ShareStorePort, _key_epoch: u64) -> Result<(), DomainError> {
         let nid = self.node_id.as_str();
         let secrets: &[(&str, &[u8])] = &[
             ("ed25519", &self.ed25519_secret),
@@ -153,7 +166,12 @@ impl HybridIdentity {
         Ok(())
     }
 
-    /// Load secret key material from a ShareStorePort during boot.
+    /// Loads required key blobs for a node during startup.
+    ///
+    /// Returns `Ok(None)` if any required item is absent; store security errors
+    /// and undersized key blobs are returned as errors. The key epoch is
+    /// currently ignored. The reconstructed identity does not reload ML-DSA
+    /// or ML-KEM public keys, so those vectors are empty in the returned value.
     pub fn load_seeds(
         node_id: NodeId,
         store: &dyn ShareStorePort,
@@ -225,12 +243,15 @@ impl HybridIdentity {
         }))
     }
 
-    /// Load a single seed blob from the store.
+    /// Loads one named key blob, enforcing the current minimum encoded length.
+    ///
+    /// Missing/unavailable entries return `None`, except Tee/TPM-required
+    /// failures, which propagate. The key epoch parameter is currently unused.
     fn load_seed(
         store: &dyn ShareStorePort,
         node_id: &str,
         label: &str,
-        key_epoch: u64,
+        _key_epoch: u64,
     ) -> Result<Option<Vec<u8>>, DomainError> {
         let sid = Self::seed_share_id(node_id, label);
         match store.get_share(&sid) {

@@ -7,6 +7,10 @@ use crate::DomainError;
 pub struct DayEpoch(String);
 
 impl DayEpoch {
+    /// Parse a ten-character `YYYY-MM-DD` shape used to bind state to a UTC day.
+    ///
+    /// This validates separators and decimal digits but does not check whether
+    /// the month/day combination is a real calendar date.
     pub fn parse(raw: impl Into<String>) -> Result<Self, DomainError> {
         let s = raw.into();
         let ok = s.len() == 10
@@ -19,6 +23,7 @@ impl DayEpoch {
         Ok(Self(s))
     }
 
+    /// Convert Unix seconds to the corresponding UTC civil date.
     pub fn from_unix_secs(unix_secs: u64) -> Self {
         // Civil date from Unix days (proleptic Gregorian), UTC.
         let days = (unix_secs / 86_400) as i64;
@@ -26,6 +31,7 @@ impl DayEpoch {
         Self(format!("{y:04}-{m:02}-{d:02}"))
     }
 
+    /// Borrow the stored `YYYY-MM-DD` representation.
     pub fn as_str(&self) -> &str {
         &self.0
     }

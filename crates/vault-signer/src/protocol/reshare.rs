@@ -12,8 +12,11 @@ use crate::signer::SignerError;
 /// A single reshare message exchanged between participants.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReshareMessage {
+    /// Protocol round number represented by this message.
     pub round: u8,
+    /// Serialized participant identifier of the sender.
     pub sender: Vec<u8>,
+    /// Serialized round package payload; interpretation depends on `round`.
     pub payload: Vec<u8>,
 }
 
@@ -32,17 +35,13 @@ pub struct ReshareConfig {
 ///
 /// Allows a FROST signing group to change its composition (add/remove members)
 /// or threshold without changing the group's public key.
-pub struct KeyReshare {
-    /// Our current key package.
-    current_key_package: frost::keys::KeyPackage,
-    /// Reshare configuration.
-    config: ReshareConfig,
-}
+pub struct KeyReshare {}
 
 impl KeyReshare {
     /// Create a new reshare operation.
     pub fn new(current_key_package: frost::keys::KeyPackage, config: ReshareConfig) -> Result<Self, SignerError> {
-        Ok(Self { current_key_package, config })
+        let _ = (current_key_package, config);
+        Ok(Self {})
     }
 
     /// Resharing must preserve the existing group key and requires a dedicated,
@@ -76,15 +75,13 @@ mod tests {
 
     #[test]
     fn reshare_preserves_group_public_key() {
-        let mut rng = OsRng;
-
         // Generate original keys with dealer
         let (shares, old_pubkey) =
-            generate_with_dealer(5, 3, frost_secp256k1::keys::IdentifierList::Default, &mut rng).unwrap();
+            generate_with_dealer(5, 3, frost_secp256k1::keys::IdentifierList::Default, OsRng).unwrap();
 
         // In a real reshare, each participant would use their existing key package.
         // For testing, we verify that the group public key concept works.
-        let new_shares = generate_with_dealer(5, 3, frost_secp256k1::keys::IdentifierList::Default, &mut rng).unwrap();
+        let new_shares = generate_with_dealer(5, 3, frost_secp256k1::keys::IdentifierList::Default, OsRng).unwrap();
         let new_pubkey = new_shares.1;
 
         // The group public key changes with new dealer keygen (expected).

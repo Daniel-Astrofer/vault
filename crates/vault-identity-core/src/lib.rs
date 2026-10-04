@@ -5,15 +5,28 @@
 //! - ML-DSA-65 (post-quantum signing)
 //! - Hybrid (Ed25519 + ML-DSA-65 combined)
 
-pub mod ed25519_identity;
 pub mod error;
-pub mod hybrid_identity;
-pub mod ml_dsa_identity;
+pub mod identity;
 
-pub use ed25519_identity::Ed25519Identity;
+/// Compatibility module for callers using the pre-organized path.
+pub mod ed25519_identity {
+    pub use crate::identity::ed25519_identity::*;
+}
+
+/// Compatibility module for callers using the pre-organized path.
+pub mod hybrid_identity {
+    pub use crate::identity::hybrid_identity::*;
+}
+
+/// Compatibility module for callers using the pre-organized path.
+pub mod ml_dsa_identity {
+    pub use crate::identity::ml_dsa_identity::*;
+}
+
 pub use error::IdentityError;
-pub use hybrid_identity::HybridKeyPair;
-pub use ml_dsa_identity::MlDsa65Identity;
+pub use identity::ed25519_identity::Ed25519Identity;
+pub use identity::hybrid_identity::HybridKeyPair;
+pub use identity::ml_dsa_identity::MlDsa65Identity;
 
 use zeroize::Zeroize;
 

@@ -86,5 +86,5 @@ rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
 
 [dependencies]
-vault-core = { path = "crates/vault-core" }
+vault-core = { path = "crates/vault-core", default-features = false }
 vault-identity-core = { path = "crates/vault-identity-core" }

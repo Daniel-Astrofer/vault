@@ -1,0 +1,11 @@
+.git
+.github
+target
+target-roomy
+var
+docs
+scripts
+tests
+*.log
+.env
+.env.*

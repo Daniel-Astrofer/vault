@@ -7,11 +7,11 @@
 #   - mixed: SEV/SGX peers preferred for genesis seats via VAULT_PEER_TIERS
 # Does NOT require every node to have EPYC/SEV. Refuses fake TEE claims / staging stub in prod.
 #
-# Same code path as lab over-wire DKG: VAULT_DKG_MODE=distributed_wire (config differs only).
+# Uses the production over-wire DKG path: VAULT_DKG_MODE=distributed_wire.
 set -euo pipefail
 
 echo "== Kerosene vault genesis ceremony checklist (F8) =="
-MODE="${VAULT_CEREMONY_MODE:-${KEROSENE_ENV:-lab}}"
+MODE="${VAULT_CEREMONY_MODE:-${KEROSENE_ENV:-production}}"
 TIER="${VAULT_NODE_TIER:-auto}"
 ATT="${ATTESTATION_MODE:-}"
 DKG="${VAULT_DKG_MODE:-${VAULT_DKG:-}}"
@@ -29,11 +29,11 @@ check() {
 }
 
 case "$MODE" in
-  production|prod)
+  production)
     check "$([[ -z "${LAB_TIMELOCK_SCALE+x}" ]] && echo 1 || echo 0)" \
       "LAB_TIMELOCK_SCALE unset"
-    check "$([[ "${ATTESTATION_STAGING_STUB:-0}" != "1" ]] && echo 1 || echo 0)" \
-      "ATTESTATION_STAGING_STUB not enabled"
+    check "$([[ -z "${ATTESTATION_STAGING_STUB+x}" ]] && echo 1 || echo 0)" \
+      "ATTESTATION_STAGING_STUB unset"
     check "$([[ -n "${VAULT_GENESIS_N:-}" ]] && echo 1 || echo 0)" \
       "VAULT_GENESIS_N set (${VAULT_GENESIS_N:-})"
     check "$([[ -n "${VAULT_SEED_PEERS:-}" ]] && echo 1 || echo 0)" \
@@ -84,10 +84,7 @@ case "$MODE" in
       AUDIT_OK=1
     elif [[ -f "${VAULT_CEREMONY_MTLS_OUT:-}/audit/allowlist.txt" ]]; then
       AUDIT_OK=1
-    elif [[ -f "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/ceremony-certs/audit/allowlist.txt" ]]; then
-      AUDIT_OK=1
-    elif [[ "${VAULT_SKIP_AUDIT_KEYS_CHECK:-0}" == "1" ]]; then
-      echo "[..] VAULT_SKIP_AUDIT_KEYS_CHECK=1 — audit keys skipped (not for go-live)"
+    elif [[ -f "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/var/ceremony-certs/audit/allowlist.txt" ]]; then
       AUDIT_OK=1
     fi
     check "$AUDIT_OK" \
@@ -147,7 +144,7 @@ case "$MODE" in
     echo "Manual ceremony steps:"
     echo "  1. Bring N vaults with identical constitution seed / peer set on **private Tor mesh**"
     echo "     - VAULT_TRANSPORT=tor VAULT_SOCKS_PROXY=socks5h://127.0.0.1:9050"
-    echo "     - VAULT_SEED_PEERS=id=http://….onion:7701 (no clearnet publish; https under mTLS)"
+    echo "     - VAULT_SEED_PEERS=id=https://….onion:7701 (no clearnet publish)"
     echo "     - VAULT_AUTH_MODE=mtls + VAULT_TLS_* + VAULT_TLS_VERIFY_MODE=onion_or_spiffe"
     echo "     - VAULT_TLS_PEER_SPIFFE_ID=spiffe://…/vault/vault-1,spiffe://…/vault/vault-2,… (unique; gen_ceremony_mtls_certs.sh)"
     echo "     - Audit keys: ./scripts/ceremony/gen_audit_keys.sh + source audit/env.hint (F8; ≠ release ≠ settlement)"
@@ -162,27 +159,9 @@ case "$MODE" in
     echo "  7. Do NOT re-enable mpc as silent rollback"
     echo "  Note: member lifecycle and Tor identities belong to the private operations checkout."
     ;;
-  staging)
-    check "$([[ "${ATT}" == "sev" || "${ATT}" == "sgx" || "${ATT}" == "software" ]] && echo 1 || echo 0)" \
-      "ATTESTATION_MODE is software|sev|sgx"
-    check "$([[ -z "${LAB_TIMELOCK_SCALE+x}" ]] && echo 1 || echo 0)" \
-      "LAB_TIMELOCK_SCALE unset"
-    check "$([[ "${DKG}" == "distributed_wire" || "${DKG}" == "wire" || "${DKG}" == "over_wire" || -z "${DKG}" ]] && echo 1 || echo 0)" \
-      "VAULT_DKG_MODE is distributed_wire or default (got ${DKG:-default})"
-    check "$([[ "${VAULT_AUTH_MODE:-}" == "mtls" || "${VAULT_AUTH_MODE:-}" == "mutual_tls" ]] && echo 1 || echo 0)" \
-      "VAULT_AUTH_MODE=mtls for staging ceremony (got ${VAULT_AUTH_MODE:-unset}; static_token refused)"
-    if [[ "${VAULT_TRANSPORT:-clearnet}" == "tor" || "${VAULT_TRANSPORT:-}" == "onion" || "${VAULT_TRANSPORT:-}" == "socks" ]]; then
-      VERIFY_MODE="${VAULT_TLS_VERIFY_MODE:-onion_or_spiffe}"
-      check "$([[ "${VERIFY_MODE}" == "onion_or_spiffe" || "${VERIFY_MODE}" == "spiffe" || "${VERIFY_MODE}" == "tor" ]] && echo 1 || echo 0)" \
-        "staging Tor: VAULT_TLS_VERIFY_MODE=onion_or_spiffe|spiffe (got ${VERIFY_MODE})"
-    fi
-    echo "Staging may use ATTESTATION_STAGING_STUB=1 for TEE claims until hardware arrives."
-    echo "Domestic staging: VAULT_NODE_TIER=domestic ATTESTATION_MODE=software (no stub)."
-    ;;
   *)
-    echo "Lab mode: no production gates. Compose sets VAULT_NODE_TIER=domestic + ATTESTATION_MODE=sim."
-    echo "Lab wire DKG: ./scripts/lab/dkg_wire.sh against an explicitly managed lab."
-    echo "Production Tor ceremony: docs/operations/CEREMONY_TOR.md."
+    echo "Ceremony checklist only accepts VAULT_CEREMONY_MODE=production; got $MODE." >&2
+    exit 2
     ;;
 esac
 
@@ -190,4 +169,4 @@ if [[ "$fail" -ne 0 ]]; then
   echo "Ceremony checklist FAILED"
   exit 1
 fi
-echo "Ceremony checklist PASSED (or lab)"
+echo "Ceremony checklist PASSED"

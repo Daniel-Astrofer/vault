@@ -12,7 +12,7 @@
 //! - Real FROST signature aggregation (no placeholder responses)
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use frost_secp256k1::round1::SigningCommitments;
@@ -65,8 +65,8 @@ struct KeyStore {
 }
 
 impl KeyStore {
-    fn new(path: &PathBuf) -> Self {
-        Self { path: path.clone(), pubkey_package: None }
+    fn new(path: &Path) -> Self {
+        Self { path: path.to_path_buf(), pubkey_package: None }
     }
 
     fn load_from_disk(&mut self) -> Result<(), SignerError> {
@@ -171,7 +171,7 @@ fn handle_request(
                     Ok(id) => id,
                     Err(e) => return SignerResponse::Error { message: format!("invalid identifier {id_val}: {e}") },
                 };
-                if let Err(e) = session.add_commitments(identifier, comm.clone()) {
+                if let Err(e) = session.add_commitments(identifier, *comm) {
                     return SignerResponse::Error { message: format!("add commitment: {e}") };
                 }
             }

@@ -6,7 +6,8 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
+use std::time::Instant;
 
 use frost_secp256k1_tr as frost;
 use frost_secp256k1_tr::keys::{EvenY, KeyPackage, Tweak};
@@ -22,8 +23,11 @@ use crate::application::AntiNoncePort;
 use crate::domain::DomainError;
 use crate::{build_mtls_rustls_client_config, PeerHttpSettings, TlsPeerVerifyPolicy};
 
+/// Aggregate Taproot FROST signature with the node identities that contributed shares.
 pub struct AttributedWireSignature {
+    /// Final aggregate BIP-340 signature.
     pub signature: Signature,
+    /// Sorted, deduplicated node IDs represented in the aggregate.
     pub participant_node_ids: Vec<String>,
 }
 
@@ -32,44 +36,61 @@ struct SigningNoncesGuard {
 }
 
 impl SigningNoncesGuard {
+    /// Wrap session nonces so they are zeroized when the signing attempt exits.
     fn new(nonces: SigningNonces) -> Self {
         Self { nonces }
     }
 }
 
 impl Drop for SigningNoncesGuard {
+    /// Clear the one-time secret nonce material before releasing the guard.
     fn drop(&mut self) {
         self.nonces.zeroize();
     }
 }
 
+/// Request for a peer to create round-one commitments for one message/session.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct TrCommitRequest {
+    /// Unique signing-session identifier used for anti-nonce replay protection.
     pub session_id: String,
+    /// Message bytes encoded as hexadecimal.
     pub message_hex: String,
+    /// Node ID of the coordinator that initiated the distributed signing attempt.
     pub coordinator_node_id: String,
 }
 
+/// Round-one response containing a peer's identifier and public commitments.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct TrCommitResponse {
+    /// Mesh identity of the responding share holder.
     pub node_id: String,
+    /// Serialized FROST identifier encoded as hexadecimal.
     pub identifier_hex: String,
+    /// Serialized hiding/binding commitments encoded as hexadecimal.
     pub commitments_hex: String,
 }
 
+/// Round-two request carrying the common signing package to selected peers.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct TrSignShareRequest {
+    /// Signing session whose one-time nonces were committed in round one.
     pub session_id: String,
+    /// Serialized FROST signing package encoded as hexadecimal.
     pub signing_package_hex: String,
     /// Only these peer node ids should produce signature shares (trimmed set).
     #[serde(default)]
     pub participant_node_ids: Vec<String>,
 }
 
+/// Round-two response containing one peer's signature share.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct TrSignShareResponse {
+    /// Mesh identity of the responding share holder.
     pub node_id: String,
+    /// Serialized FROST participant identifier encoded as hexadecimal.
     pub identifier_hex: String,
+    /// Serialized Taproot FROST signature share encoded as hexadecimal.
     pub signature_share_hex: String,
 }
 
@@ -87,10 +108,12 @@ pub struct TrCosignPeerState {
 }
 
 impl TrCosignPeerState {
+    /// Create a peer handler with one local-share slot and no anti-nonce backend.
     pub fn new(local_node_id: impl Into<String>, shares: Arc<FrostTrShareSlot>) -> Self {
         Self { local_node_id: local_node_id.into(), shares, pending: Mutex::new(BTreeMap::new()), anti_nonce: None }
     }
 
+    /// Attach a durable/remote anti-nonce ledger for replay-safe peer signing.
     pub fn with_anti_nonce(mut self, anti: Box<dyn AntiNoncePort>) -> Self {
         self.anti_nonce = Some(anti);
         self
@@ -111,7 +134,13 @@ impl TrCosignPeerState {
         Ok((*id, kp.clone()))
     }
 
+    /// Create a soft session reservation and return this peer's round-one commitments.
     pub fn handle_commit(&self, req: &TrCommitRequest) -> Result<TrCommitResponse, DomainError> {
+        if let Some(ref anti) = self.anti_nonce {
+            if anti.prepare_remote(&req.session_id)? {
+                return Err(DomainError::SessionConsumed(req.session_id.clone()));
+            }
+        }
         let message = hex::decode(req.message_hex.trim())
             .map_err(|e| DomainError::ThresholdError(format!("co-sign message hex: {e}")))?;
         let snap = self.shares.snapshot()?;
@@ -133,6 +162,11 @@ impl TrCosignPeerState {
         })
     }
 
+    /// Consume pending round-one nonces to produce a signature share when selected.
+    ///
+    /// Returns `Ok(None)` when this peer is outside the trimmed signer set or its
+    /// identifier is absent from the signing package. Nonces are removed before
+    /// package decoding and zeroized on every exit path.
     pub fn handle_sign_share(&self, req: &TrSignShareRequest) -> Result<Option<TrSignShareResponse>, DomainError> {
         if !req.participant_node_ids.is_empty() && !req.participant_node_ids.iter().any(|id| id == &self.local_node_id)
         {
@@ -147,7 +181,7 @@ impl TrCosignPeerState {
         let entry = pending.remove(&req.session_id).ok_or_else(|| {
             DomainError::ThresholdError(format!("no pending TR co-sign round for session {}", req.session_id))
         })?;
-        let PendingTrRound { mut nonces, message } = entry;
+        let PendingTrRound { nonces, message } = entry;
         let _nonces_guard = SigningNoncesGuard::new(nonces);
         let pkg_bytes = hex::decode(req.signing_package_hex.trim())
             .map_err(|e| DomainError::ThresholdError(format!("signing package hex: {e}")))?;
@@ -156,12 +190,12 @@ impl TrCosignPeerState {
         if signing_package.message() != message.as_slice() {
             return Err(DomainError::ThresholdError("co-sign signing package message mismatch".into()));
         }
-        // Anti-nonce: refuse sign_share if session already consumed at this vault.
+        // Promote the round-1 soft reservation to a durable burn before the
+        // nonce is used. A restart must never make this FROST session reusable.
         if let Some(ref anti) = self.anti_nonce {
-            if anti.is_consumed(&req.session_id)? {
+            if anti.prepare_remote_durable(&req.session_id)? {
                 return Err(DomainError::SessionConsumed(req.session_id.clone()));
             }
-            anti.observe_remote(&req.session_id)?;
         }
         let snap = self.shares.snapshot()?;
         let (id, kp) = Self::local_key_package(&snap)?;
@@ -182,37 +216,90 @@ impl TrCosignPeerState {
 
 /// Outbound peer co-sign transport (mTLS or lab token).
 pub trait TrCosignTransport: Send + Sync {
-    fn collect_commitments(&self, req: &TrCommitRequest) -> Result<Vec<TrCommitResponse>, DomainError>;
-    fn collect_signature_shares(&self, req: &TrSignShareRequest) -> Result<Vec<TrSignShareResponse>, DomainError>;
+    /// Collect at least the requested number of remote commitment responses.
+    fn collect_commitments(
+        &self,
+        req: &TrCommitRequest,
+        required_peer_responses: usize,
+    ) -> Result<Vec<TrCommitResponse>, DomainError>;
+    /// Collect signature-share responses from the selected co-sign participants.
+    fn collect_signature_shares(
+        &self,
+        req: &TrSignShareRequest,
+        required_peer_responses: usize,
+    ) -> Result<Vec<TrSignShareResponse>, DomainError>;
 }
 
+/// Selects which independent Taproot keyset and HTTP route a co-sign uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrCosignKeyset {
+    /// Users' omnibus Taproot signing keyset.
+    Users,
+    /// Dedicated channel-operations Taproot keyset.
+    Channels,
+}
+
+impl TrCosignKeyset {
+    /// Return the API path prefix assigned to this keyset.
+    fn route_prefix(self) -> &'static str {
+        match self {
+            Self::Users => "/v1/frost/tr",
+            Self::Channels => "/v1/frost/tr/channels",
+        }
+    }
+}
+
+/// Test/local transport that returns no remote co-sign responses.
 pub struct NoopTrCosignTransport;
 
 impl TrCosignTransport for NoopTrCosignTransport {
-    fn collect_commitments(&self, _req: &TrCommitRequest) -> Result<Vec<TrCommitResponse>, DomainError> {
+    fn collect_commitments(
+        &self,
+        _req: &TrCommitRequest,
+        _required_peer_responses: usize,
+    ) -> Result<Vec<TrCommitResponse>, DomainError> {
         Ok(vec![])
     }
-    fn collect_signature_shares(&self, _req: &TrSignShareRequest) -> Result<Vec<TrSignShareResponse>, DomainError> {
+    fn collect_signature_shares(
+        &self,
+        _req: &TrSignShareRequest,
+        _required_peer_responses: usize,
+    ) -> Result<Vec<TrSignShareResponse>, DomainError> {
         Ok(vec![])
     }
 }
 
+/// Blocking HTTP transport for collecting remote Taproot FROST round messages.
+#[derive(Clone)]
 pub struct HttpTrCosignTransport {
     peers: Vec<(String, String)>,
     auth_token: Option<String>,
     peer_http: PeerHttpSettings,
     tls: Option<rustls::ClientConfig>,
+    keyset: TrCosignKeyset,
 }
 
 impl HttpTrCosignTransport {
+    /// Configure HTTP transport with the default USERS keyset.
     pub fn with_peer_http(
         peers: Vec<(String, String)>,
         auth_token: Option<String>,
         peer_http: PeerHttpSettings,
     ) -> Self {
-        Self { peers, auth_token, peer_http, tls: None }
+        Self::with_peer_http_for_keyset(peers, auth_token, peer_http, TrCosignKeyset::Users)
     }
 
+    /// Configure HTTP transport for an explicitly selected Taproot keyset.
+    pub fn with_peer_http_for_keyset(
+        peers: Vec<(String, String)>,
+        auth_token: Option<String>,
+        peer_http: PeerHttpSettings,
+        keyset: TrCosignKeyset,
+    ) -> Self {
+        Self { peers, auth_token, peer_http, tls: None, keyset }
+    }
+
+    /// Configure mTLS transport with the default USERS keyset.
     pub fn with_mtls(
         peers: Vec<(String, String)>,
         peer_http: PeerHttpSettings,
@@ -221,8 +308,29 @@ impl HttpTrCosignTransport {
         ca_path: &Path,
         verify: &TlsPeerVerifyPolicy,
     ) -> Result<Self, DomainError> {
+        Self::with_mtls_for_keyset(
+            peers,
+            peer_http,
+            client_cert_path,
+            client_key_path,
+            ca_path,
+            verify,
+            TrCosignKeyset::Users,
+        )
+    }
+
+    /// Configure mTLS transport for an explicitly selected Taproot keyset.
+    pub fn with_mtls_for_keyset(
+        peers: Vec<(String, String)>,
+        peer_http: PeerHttpSettings,
+        client_cert_path: &Path,
+        client_key_path: &Path,
+        ca_path: &Path,
+        verify: &TlsPeerVerifyPolicy,
+        keyset: TrCosignKeyset,
+    ) -> Result<Self, DomainError> {
         let tls = build_mtls_rustls_client_config(client_cert_path, client_key_path, ca_path, verify)?;
-        Ok(Self { peers, auth_token: None, peer_http, tls: Some(tls) })
+        Ok(Self { peers, auth_token: None, peer_http, tls: Some(tls), keyset })
     }
 
     fn build_blocking_client(&self) -> Result<reqwest::blocking::Client, DomainError> {
@@ -262,32 +370,95 @@ impl HttpTrCosignTransport {
         }
         res.json().map_err(|e| DomainError::ThresholdError(format!("TR co-sign peer decode: {e}")))
     }
+
+    fn collect_parallel<T, R>(
+        &self,
+        peers: Vec<(String, String)>,
+        path: String,
+        body: T,
+        required_peer_responses: usize,
+        operation: &'static str,
+    ) -> Vec<R>
+    where
+        T: Clone + Serialize + Send + 'static,
+        R: for<'de> Deserialize<'de> + Send + 'static,
+    {
+        if required_peer_responses == 0 || peers.is_empty() {
+            return Vec::new();
+        }
+
+        let peer_count = peers.len();
+        let (sender, receiver) = mpsc::channel();
+        for (id, base) in peers {
+            let sender = sender.clone();
+            let transport = self.clone();
+            let path = path.clone();
+            let body = body.clone();
+            std::thread::spawn(move || {
+                let result = transport.post_peer::<_, R>(&base, &path, &body);
+                let _ = sender.send((id, result));
+            });
+        }
+        drop(sender);
+
+        let deadline = Instant::now() + self.peer_http.timeout;
+        let mut received = 0usize;
+        let mut out = Vec::with_capacity(required_peer_responses.min(peer_count));
+        while received < peer_count && out.len() < required_peer_responses {
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                break;
+            };
+            match receiver.recv_timeout(remaining) {
+                Ok((_, Ok(response))) => {
+                    received += 1;
+                    out.push(response);
+                }
+                Ok((id, Err(error))) => {
+                    received += 1;
+                    eprintln!("TR co-sign {operation} peer {id} unavailable: {error}");
+                }
+                Err(_) => break,
+            }
+        }
+        out
+    }
 }
 
 impl TrCosignTransport for HttpTrCosignTransport {
-    fn collect_commitments(&self, req: &TrCommitRequest) -> Result<Vec<TrCommitResponse>, DomainError> {
-        let mut out = Vec::new();
-        for (id, base) in &self.peers {
-            let resp: TrCommitResponse = self
-                .post_peer(base, "/v1/frost/tr/commit", req)
-                .map_err(|e| DomainError::ThresholdError(format!("TR commit from {id}: {e}")))?;
-            out.push(resp);
-        }
-        Ok(out)
+    fn collect_commitments(
+        &self,
+        req: &TrCommitRequest,
+        required_peer_responses: usize,
+    ) -> Result<Vec<TrCommitResponse>, DomainError> {
+        // Query all candidates concurrently. A dead first peer must not delay a
+        // healthy quorum merely because of its position in the roster.
+        Ok(self.collect_parallel(
+            self.peers.clone(),
+            format!("{}/commit", self.keyset.route_prefix()),
+            req.clone(),
+            required_peer_responses,
+            "commitment",
+        ))
     }
 
-    fn collect_signature_shares(&self, req: &TrSignShareRequest) -> Result<Vec<TrSignShareResponse>, DomainError> {
-        let mut out = Vec::new();
-        for (id, base) in &self.peers {
-            if !req.participant_node_ids.is_empty() && !req.participant_node_ids.iter().any(|p| p == id) {
-                continue;
-            }
-            let resp: TrSignShareResponse = self
-                .post_peer(base, "/v1/frost/tr/sign-share", req)
-                .map_err(|e| DomainError::ThresholdError(format!("TR sign-share from {id}: {e}")))?;
-            out.push(resp);
-        }
-        Ok(out)
+    fn collect_signature_shares(
+        &self,
+        req: &TrSignShareRequest,
+        required_peer_responses: usize,
+    ) -> Result<Vec<TrSignShareResponse>, DomainError> {
+        let peers = self
+            .peers
+            .iter()
+            .filter(|(id, _)| req.participant_node_ids.is_empty() || req.participant_node_ids.iter().any(|p| p == id))
+            .cloned()
+            .collect();
+        Ok(self.collect_parallel(
+            peers,
+            format!("{}/sign-share", self.keyset.route_prefix()),
+            req.clone(),
+            required_peer_responses,
+            "signature-share",
+        ))
     }
 }
 
@@ -328,6 +499,12 @@ pub fn sign_raw_wire(
     Ok(sign_raw_wire_attributed(shares, transport, local_node_id, session_id, message)?.signature)
 }
 
+/// Coordinate a distributed Taproot FROST signature and return signer attribution.
+///
+/// Requires exactly one local share. It gathers remote commitments, selects a
+/// deterministic threshold subset, requests shares only from selected peers,
+/// aggregates and verifies the result, then returns sorted participant node IDs.
+/// Returns a fail-stop error if either commitments or shares do not meet threshold.
 pub fn sign_raw_wire_attributed(
     shares: &FrostTrShareSlot,
     transport: &dyn TrCosignTransport,
@@ -352,7 +529,7 @@ pub fn sign_raw_wire_attributed(
 
     let local_kp_tweaked = local_kp.clone().into_even_y(None).tweak(None::<&[u8]>);
     let mut rng = OsRng;
-    let (mut local_nonces, local_commitments) = frost::round1::commit(local_kp_tweaked.signing_share(), &mut rng);
+    let (local_nonces, local_commitments) = frost::round1::commit(local_kp_tweaked.signing_share(), &mut rng);
     let mut local_nonces_guard = SigningNoncesGuard::new(local_nonces);
 
     let commit_req = TrCommitRequest {
@@ -360,7 +537,8 @@ pub fn sign_raw_wire_attributed(
         message_hex: hex::encode(message),
         coordinator_node_id: local_node_id.to_string(),
     };
-    let peer_commits = transport.collect_commitments(&commit_req)?;
+    let required_peer_responses = min_signers.saturating_sub(1);
+    let peer_commits = transport.collect_commitments(&commit_req, required_peer_responses)?;
 
     let mut commitments_map: BTreeMap<Identifier, SigningCommitments> = BTreeMap::new();
     let mut peer_id_by_identifier: BTreeMap<Identifier, String> = BTreeMap::new();
@@ -422,7 +600,7 @@ pub fn sign_raw_wire_attributed(
         signing_package_hex: pkg_hex,
         participant_node_ids: selected_peer_nodes.iter().cloned().collect(),
     };
-    let peer_shares = transport.collect_signature_shares(&share_req)?;
+    let peer_shares = transport.collect_signature_shares(&share_req, required_peer_responses)?;
 
     let mut signature_shares: BTreeMap<Identifier, SignatureShare> = BTreeMap::new();
     let mut participant_node_ids = vec![local_node_id.to_string()];
@@ -479,21 +657,40 @@ pub fn tr_state_local_only(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     #[cfg(feature = "dealer_lab")]
-    use crate::adapters::frost_tr_bitcoin::generate_tr_dealer;
+    use super::super::frost_tr_bitcoin::generate_tr_dealer;
+    use super::*;
 
+    #[test]
+    fn users_and_channels_use_distinct_cosign_routes() {
+        assert_eq!(TrCosignKeyset::Users.route_prefix(), "/v1/frost/tr");
+        assert_eq!(TrCosignKeyset::Channels.route_prefix(), "/v1/frost/tr/channels");
+    }
+
+    #[cfg(feature = "dealer_lab")]
     struct MemoryMesh {
         peers: Vec<(String, Arc<TrCosignPeerState>)>,
     }
 
+    #[cfg(feature = "dealer_lab")]
     impl TrCosignTransport for MemoryMesh {
-        fn collect_commitments(&self, req: &TrCommitRequest) -> Result<Vec<TrCommitResponse>, DomainError> {
-            self.peers.iter().map(|(_, p)| p.handle_commit(req)).collect()
+        fn collect_commitments(
+            &self,
+            req: &TrCommitRequest,
+            required_peer_responses: usize,
+        ) -> Result<Vec<TrCommitResponse>, DomainError> {
+            self.peers.iter().take(required_peer_responses).map(|(_, p)| p.handle_commit(req)).collect()
         }
-        fn collect_signature_shares(&self, req: &TrSignShareRequest) -> Result<Vec<TrSignShareResponse>, DomainError> {
+        fn collect_signature_shares(
+            &self,
+            req: &TrSignShareRequest,
+            required_peer_responses: usize,
+        ) -> Result<Vec<TrSignShareResponse>, DomainError> {
             let mut out = Vec::new();
             for (_, p) in &self.peers {
+                if out.len() >= required_peer_responses {
+                    break;
+                }
                 if let Some(resp) = p.handle_sign_share(req)? {
                     out.push(resp);
                 }

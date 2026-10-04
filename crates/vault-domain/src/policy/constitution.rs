@@ -37,6 +37,10 @@ impl Default for DowngradePolicy {
 }
 
 impl DowngradePolicy {
+    /// Enforce the minimum supported post-quantum and symmetric security categories.
+    ///
+    /// The boolean requirement flags are descriptive policy switches and are
+    /// not normalized or cross-checked by this method.
     pub fn validate(&self) -> Result<(), DomainError> {
         if self.pq_kem_security_category < 3 {
             return Err(DomainError::InvalidConstitution(format!(
@@ -66,12 +70,19 @@ impl DowngradePolicy {
 /// are rejected (fail-closed).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FormatVersions {
+    /// Version of settlement intent records accepted by this constitution.
     pub intent: u16,
+    /// Version of settlement receipt records accepted by this constitution.
     pub receipt: u16,
+    /// Version of encrypted share envelopes accepted by this constitution.
     pub share_envelope: u16,
+    /// Version of distributed key generation transcripts accepted by this constitution.
     pub dkg_transcript: u16,
+    /// Version of resharing transcripts accepted by this constitution.
     pub reshare_transcript: u16,
+    /// Version of certificates accepted by this constitution.
     pub certificate: u16,
+    /// Version of audit records accepted by this constitution.
     pub audit_record: u16,
     /// Minimum protocol version accepted.
     pub min_protocol_version: u16,
@@ -80,6 +91,7 @@ pub struct FormatVersions {
 }
 
 impl Default for FormatVersions {
+    /// Set all format and protocol version fields to the initial version `1`.
     fn default() -> Self {
         Self {
             intent: 1,
@@ -117,20 +129,31 @@ impl FormatVersions {
 /// Active security/economic constitution anchored on the vault ledger.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Constitution {
+    /// Monotonic constitution schema/revision number.
     pub version: u32,
+    /// Aggregate withdrawal ceiling for one day, in satoshis.
     pub max_withdraw_per_day_sats: u64,
+    /// Maximum amount for an individual withdrawal, in satoshis.
     pub max_withdraw_per_tx_sats: u64,
+    /// Number of nodes in the active signing set.
     pub signing_n: usize,
+    /// Minimum signing participants required by the configured quorum.
     pub signing_t: usize,
+    /// Minimum governance voters required to amend governed state.
     pub governance_t: usize,
+    /// Current miner reward fraction, in basis points of profit.
     pub p_reward_bps: u32,
+    /// Upper bound allowed for the miner reward fraction, in basis points.
     pub p_reward_max_bps: u32,
+    /// Distribution of realized profit among operational child buckets.
     pub profit_splits: ProfitSplits,
     /// Mesh-governed miner payout frequency. Amended by quorum vote.
     /// Default: daily. Override at genesis via `VAULT_MINER_PAYOUT_FREQUENCY`.
     /// TODO(4.1): Final value pending stakeholder decision.
     pub payout_frequency: MinerPayoutCadence,
+    /// Identifier for the cryptographic suite selected by the mesh.
     pub crypto_suite_id: String,
+    /// Canonical measurement hash over the fields included by [`Self::compute_hash`].
     pub hash: String,
     /// Pinned code/binary measurement for HW/staging attestation binding.
     /// Not part of `hash` material (derived/bound separately to avoid circularity).
@@ -147,6 +170,11 @@ pub struct Constitution {
 }
 
 impl Constitution {
+    /// Build the lab dry-run constitution for `n` signing nodes.
+    ///
+    /// Uses a two-thirds signing threshold, a stricter governance threshold,
+    /// lab profit splits, default downgrade/version policies, and a zero-time
+    /// quantum-migration epoch. Rejects sets smaller than two nodes.
     pub fn v1_lab(n: usize) -> Result<Self, DomainError> {
         if n < 2 {
             return Err(DomainError::InvalidConstitution("signing_n must be >= 2".into()));
@@ -182,6 +210,9 @@ impl Constitution {
     }
 
     /// Open economy constitution: `p%=1%` miners split live (F9).
+    ///
+    /// Uses the same threshold and withdrawal defaults as the lab constitution,
+    /// but routes the configured miner reward through [`ProfitSplits::open_with_reward`].
     pub fn v1_open(n: usize) -> Result<Self, DomainError> {
         if n < 2 {
             return Err(DomainError::InvalidConstitution("signing_n must be >= 2".into()));
@@ -221,22 +252,34 @@ impl Constitution {
         }
     }
 
+    /// Return the explicit attestation measurement pin, falling back to a digest of `hash`.
     pub fn measurement_pin_or_hash(&self) -> Measurement {
         self.measurement_pin.clone().unwrap_or_else(|| Measurement::from_bytes(self.hash.as_bytes()))
     }
 
+    /// Set an explicit hardware/staging measurement pin without changing the constitution hash.
     pub fn with_measurement_pin(mut self, pin: Measurement) -> Self {
         self.measurement_pin = Some(pin);
         self
     }
 
     /// Override mesh-governed payout frequency (e.g. from env at genesis bootstrap).
+    ///
+    /// Recomputes `hash` after changing the field. The current hash material
+    /// does not serialize `payout_frequency`, so the recomputation preserves
+    /// the existing digest until the hash scheme includes that field.
     pub fn with_payout_frequency(mut self, freq: MinerPayoutCadence) -> Self {
         self.payout_frequency = freq;
         self.hash = self.compute_hash();
         self
     }
 
+    /// Compute the canonical digest from the constitution's current hash material.
+    ///
+    /// The material includes version, withdrawal limits, thresholds, reward
+    /// bounds, profit split, crypto suite, and optional previous hash. Measurement
+    /// pin, downgrade policy, format versions, payout frequency, and quantum
+    /// migration state are not part of this digest in the current implementation.
     pub fn compute_hash(&self) -> String {
         let prev = self.previous_hash.as_deref().unwrap_or("");
         let material = format!(
@@ -258,6 +301,10 @@ impl Constitution {
         crate::Measurement::from_bytes(material.as_bytes()).as_hex().to_string()
     }
 
+    /// Validate threshold/range invariants, nested policies, and the stored hash.
+    ///
+    /// Returns [`DomainError::InvalidConstitution`] when any check fails. This
+    /// method does not independently validate every descriptive or version field.
     pub fn validate(&self) -> Result<(), DomainError> {
         if self.signing_n < 2 {
             return Err(DomainError::InvalidConstitution("n < 2".into()));
@@ -279,6 +326,11 @@ impl Constitution {
         Ok(())
     }
 
+    /// Serialize the constitution's current public policy fields into its JSON wire form.
+    ///
+    /// The current representation omits payout frequency, previous hash, and
+    /// quantum-migration state, and directly interpolates string values. It should
+    /// not be treated as a lossless representation of every struct field.
     pub fn to_json(&self) -> String {
         let pin = self.measurement_pin.as_ref().map(|m| m.as_hex().to_string()).unwrap_or_default();
         format!(
@@ -318,6 +370,9 @@ impl Constitution {
 }
 
 /// `t = ceil(2n/3)` for transaction signing quorum.
+///
+/// Returns the smallest integer threshold that is at least two-thirds of `n`;
+/// for `n == 0` it returns zero.
 pub fn quorum_two_thirds(n: usize) -> usize {
     (2 * n).div_ceil(3)
 }

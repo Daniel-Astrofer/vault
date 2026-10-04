@@ -25,9 +25,13 @@ const HEADER_LEN: usize = 8 + 1 + 1 + SALT_LEN + NONCE_LEN;
 
 /// Port for policy-bound TPM passphrase sealing.
 pub trait TpmSealPort: Send + Sync {
+    /// Returns the stable backend label used in boot diagnostics.
     fn backend_kind(&self) -> &'static str;
+    /// Reports whether the backend is configured to accept operations.
     fn available(&self) -> bool;
+    /// Seals plaintext under the backend's policy binding.
     fn seal(&self, plaintext: &[u8], policy_digest: &[u8]) -> Result<Vec<u8>, DomainError>;
+    /// Opens a sealed blob only when the supplied policy binding is accepted.
     fn unseal(&self, sealed: &[u8], policy_digest: &[u8]) -> Result<Vec<u8>, DomainError>;
 }
 
@@ -40,8 +44,11 @@ pub trait TpmSealPort: Send + Sync {
 /// - `Tss(Box<TpmTssSealAdapter>)`: Real TSS integration (requires `--features tpm` + libtss2-esys)
 #[derive(Debug, Clone)]
 pub enum TpmSealAdapter {
+    /// No supported TPM backend is available; seal and unseal fail closed.
     FailClosed,
+    /// Lab-only software envelope using ChaCha20-Poly1305 and a mock key derivation.
     Mock,
+    /// A hardware TPM was detected, but the TSS feature is unavailable.
     HwProbe,
     /// TPM TSS hardware adapter (compiled with `--features tpm`).
     /// Delegates seal/unseal to TCG TSS Enhanced System API.
@@ -147,17 +154,22 @@ impl TpmSealPort for TpmSealAdapter {
 
 /// Resolved passphrase and whether a lab fallback bypassed TPM sealing.
 pub struct ResolvedPassphrase {
+    /// AEAD passphrase recovered from the envelope or clear fallback.
     pub passphrase: String,
+    /// Backend label returned by [`TpmSealPort::backend_kind`].
     pub tpm_backend: &'static str,
+    /// Whether an error was bypassed by returning the clear configured value.
     pub used_clear_fallback: bool,
 }
 
-/// Returns `<data-root>/tpm-passphrase.sealed`.
+/// Builds the path `<data-root>/tpm-passphrase.sealed`.
 pub fn sealed_passphrase_path(data_root: &Path) -> PathBuf {
     data_root.join("tpm-passphrase.sealed")
 }
 
-/// Returns whether either conventional Linux TPM device node exists.
+/// Checks for either conventional Linux TPM device node.
+///
+/// This only detects the device path; it does not verify that sealing works.
 pub fn tpm_device_present() -> bool {
     Path::new("/dev/tpmrm0").exists() || Path::new("/dev/tpm0").exists()
 }
@@ -225,7 +237,12 @@ fn write_envelope(path: &Path, bytes: &[u8]) -> Result<(), DomainError> {
     fs::rename(&tmp, path).map_err(|e| DomainError::ShareStoreForbidden(format!("rename TPM envelope: {e}")))
 }
 
-/// Bootstraps or reloads the AEAD passphrase from its TPM envelope.
+/// Loads the AEAD passphrase envelope or seals the configured clear value on first boot.
+///
+/// The envelope is bound to a digest derived from `data_root`. If any load,
+/// unseal, UTF-8 conversion, or initial seal/write step fails, `clear_fallback`
+/// allows returning the configured clear passphrase and marks the result as a
+/// fallback. An absent clear value still fails even when fallback is enabled.
 pub fn resolve_aead_passphrase(
     data_root: &Path,
     clear_passphrase: Option<&str>,
@@ -273,13 +290,14 @@ pub fn resolve_aead_passphrase(
 /// If counter decreased → rollback detected → refuse unseal (fail-closed).
 #[derive(Debug, Clone)]
 pub struct CounterSealedBlob {
+    /// TPM NV counter recorded when the blob was sealed.
     pub counter: u64,
+    /// Backend-specific sealed payload following the encoded counter.
     pub sealed_blob: Vec<u8>,
 }
 
 impl CounterSealedBlob {
-    /// Encode counter + sealed blob for persistent storage.
-    /// Format: counter(8 BE) | sealed_blob
+    /// Encodes the counter and opaque sealed payload as big-endian counter bytes followed by the blob.
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(8 + self.sealed_blob.len());
         out.extend_from_slice(&self.counter.to_be_bytes());
@@ -287,7 +305,9 @@ impl CounterSealedBlob {
         out
     }
 
-    /// Decode counter + sealed blob.
+    /// Decodes an eight-byte big-endian counter prefix and the remaining sealed payload.
+    ///
+    /// Returns a TPM-required error if the input is shorter than the counter prefix.
     pub fn decode(bytes: &[u8]) -> Result<Self, DomainError> {
         if bytes.len() < 8 {
             return Err(DomainError::TpmRequired("counter sealed blob too short".into()));
@@ -430,7 +450,7 @@ mod tests {
 
     #[test]
     fn tss_variant_is_fail_closed_without_feature() {
-        let tss = TpmSealAdapter::Tss(Box::new(super::super::share_tpm_tss::TpmTssSealAdapter::new()));
+        let tss = TpmSealAdapter::Tss(Box::default());
         assert_eq!(tss.backend_kind(), "tss");
         // Without --features tpm, TSS seal/unseal fail closed
         assert!(matches!(tss.seal(b"x", b"p"), Err(DomainError::TpmRequired(_))));

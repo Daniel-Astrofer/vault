@@ -67,6 +67,7 @@ impl TeeAttestationAdapter {
         })
     }
 
+    /// Creates the adapter with the supplied release-Hb measurement allowlist.
     pub fn with_allowlist(
         mode: AttestationMode,
         staging_stub: bool,
@@ -78,10 +79,12 @@ impl TeeAttestationAdapter {
         Self::with_policy(mode, staging_stub, refuse_stub, platform_root, pinned_measurement, allowlisted_hbs)
     }
 
+    /// Returns the configured expected binary/constitution measurement pin.
     pub fn pinned_measurement(&self) -> &Measurement {
         &self.pinned_measurement
     }
 
+    /// Replaces the release-Hb allowlist used by subsequent measurement checks.
     pub fn set_allowlisted_hbs(&mut self, hbs: Vec<ContentHash>) {
         self.allowlisted_hbs = hbs;
     }
@@ -145,7 +148,7 @@ impl TeeAttestationAdapter {
                 self.mode.as_str()
             )));
         }
-        if &env.measurement != &quote.measurement {
+        if env.measurement != quote.measurement {
             return Err(DomainError::AttestationRejected("HW quote envelope measurement != quote.measurement".into()));
         }
         self.enforce_measurement(&env.measurement)?;
@@ -162,10 +165,16 @@ impl TeeAttestationAdapter {
 }
 
 impl AttestationPort for TeeAttestationAdapter {
+    /// Returns whether this adapter is configured for SEV or SGX.
     fn mode(&self) -> AttestationMode {
         self.mode
     }
 
+    /// Issues a measurement-bound staging stub or a real platform quote.
+    ///
+    /// Measurement admission is checked first. Stub generation requires
+    /// `staging_stub` and is refused when `refuse_stub` is set; otherwise the
+    /// hardware path must be available and enabled.
     fn issue_quote(&self, measurement: &Measurement) -> Result<AttestationQuote, DomainError> {
         self.enforce_measurement(measurement)?;
         if self.stub_path_allowed() {
@@ -185,6 +194,10 @@ impl AttestationPort for TeeAttestationAdapter {
         )))
     }
 
+    /// Verifies quote mode, measurement admission, and stub MAC or hardware report.
+    ///
+    /// Software/simulation quotes and quotes for the other hardware platform are
+    /// rejected. Staging stubs are accepted only when this adapter permits them.
     fn verify_quote(&self, quote: &AttestationQuote) -> Result<(), DomainError> {
         if quote.mode.is_software_measurement() {
             return Err(DomainError::AttestationRejected("TEE adapter rejects software/sim quotes".into()));

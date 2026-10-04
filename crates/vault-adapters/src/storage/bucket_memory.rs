@@ -18,14 +18,21 @@ pub struct InMemoryBucketLedger {
 }
 
 pub(crate) struct BucketState {
+    /// Active policy for each bucket kind.
     pub(crate) policies: HashMap<BucketKind, BucketPolicy>,
+    /// Spend counters maintained in memory.
     pub(crate) spent_today: HashMap<BucketKind, u64>,
+    /// Intent IDs already consumed by this process.
     pub(crate) consumed: HashSet<String>,
     /// Soft-reserved intents (not yet durable-burned): id → (kind, amount, expires).
     pub(crate) reserved: HashMap<String, (BucketKind, u64, Instant)>,
 }
 
 impl InMemoryBucketLedger {
+    /// Builds lab policies from transaction and daily caps.
+    ///
+    /// USER, PROFIT, and CHANNELS use the supplied caps; MINERS use one tenth
+    /// and INFRA uses one fifth. Derived limits are clamped to at least one satoshi.
     pub fn from_constitution_caps(max_tx: u64, max_day: u64) -> Self {
         let mut policies = HashMap::new();
         for kind in [BucketKind::Users, BucketKind::Profit, BucketKind::Miners, BucketKind::Channels, BucketKind::Infra]
@@ -49,6 +56,7 @@ impl InMemoryBucketLedger {
         }
     }
 
+    /// Expires soft reservations and refunds their reserved spend amounts.
     pub(crate) fn sweep_expired(g: &mut BucketState) {
         let now = Instant::now();
         let expired: Vec<String> =
@@ -76,16 +84,19 @@ impl InMemoryBucketLedger {
 }
 
 impl BucketLedgerPort for InMemoryBucketLedger {
+    /// Returns a clone of the configured bucket policy.
     fn policy(&self, kind: BucketKind) -> Result<BucketPolicy, DomainError> {
         let g = self.inner.lock().expect("bucket lock");
         g.policies.get(&kind).cloned().ok_or_else(|| DomainError::InvalidBucket(kind.as_str().into()))
     }
 
+    /// Returns the current in-memory spend counter, defaulting to zero.
     fn spent_today(&self, kind: BucketKind) -> Result<u64, DomainError> {
         let g = self.inner.lock().expect("bucket lock");
         Ok(*g.spent_today.get(&kind).unwrap_or(&0))
     }
 
+    /// Adds spend with saturating arithmetic; this adapter does not persist the counter.
     fn record_spend(&self, kind: BucketKind, amount_sats: u64) -> Result<(), DomainError> {
         let mut g = self.inner.lock().expect("bucket lock");
         let e = g.spent_today.entry(kind).or_insert(0);
@@ -93,17 +104,20 @@ impl BucketLedgerPort for InMemoryBucketLedger {
         Ok(())
     }
 
+    /// Tests membership in the in-memory consumed set.
     fn is_consumed(&self, intent_id: &str) -> Result<bool, DomainError> {
         let g = self.inner.lock().expect("bucket lock");
         Ok(g.consumed.contains(intent_id))
     }
 
+    /// Inserts an ID as consumed without checking for a previous insertion.
     fn mark_consumed(&self, intent_id: &str) -> Result<(), DomainError> {
         let mut g = self.inner.lock().expect("bucket lock");
         g.consumed.insert(intent_id.to_string());
         Ok(())
     }
 
+    /// Atomically inserts an unused ID and rejects duplicate consumption.
     fn try_consume(&self, intent_id: &str) -> Result<(), DomainError> {
         let mut g = self.inner.lock().expect("bucket lock");
         Self::sweep_expired(&mut g);
@@ -115,12 +129,17 @@ impl BucketLedgerPort for InMemoryBucketLedger {
         Ok(())
     }
 
+    /// Expires stale reservations before checking current reservation membership.
     fn has_reservation(&self, intent_id: &str) -> Result<bool, DomainError> {
         let mut g = self.inner.lock().expect("bucket lock");
         Self::sweep_expired(&mut g);
         Ok(g.reserved.contains_key(intent_id))
     }
 
+    /// Validates policy and reserves an amount for five minutes.
+    ///
+    /// An identical live reservation is idempotent; reusing its ID with a
+    /// different bucket or amount is rejected.
     fn reserve_spend(
         &self,
         intent_id: &str,
@@ -149,6 +168,7 @@ impl BucketLedgerPort for InMemoryBucketLedger {
         Ok(())
     }
 
+    /// Promotes a live reservation to consumed state; repeated commit is idempotent.
     fn commit_consume(&self, intent_id: &str) -> Result<(), DomainError> {
         let mut g = self.inner.lock().expect("bucket lock");
         Self::sweep_expired(&mut g);
@@ -164,6 +184,7 @@ impl BucketLedgerPort for InMemoryBucketLedger {
         Ok(())
     }
 
+    /// Removes a reservation and refunds the reserved counter amount.
     fn release_reservation(&self, intent_id: &str, kind: BucketKind, amount_sats: u64) -> Result<(), DomainError> {
         let mut g = self.inner.lock().expect("bucket lock");
         if let Some((k, amt, _)) = g.reserved.remove(intent_id) {
@@ -179,6 +200,7 @@ impl BucketLedgerPort for InMemoryBucketLedger {
         Ok(())
     }
 
+    /// Validates and records spend plus Intent consumption under one lock.
     fn authorize_spend_and_consume(
         &self,
         intent_id: &str,
@@ -211,6 +233,10 @@ pub struct PersistedBucketLedger {
 }
 
 impl PersistedBucketLedger {
+    /// Opens a durable consumed-ID log and initializes in-memory bucket caps.
+    ///
+    /// Existing non-empty, non-comment lines are loaded as consumed Intent IDs.
+    /// Directory, file, or log-read failures are returned as domain errors.
     pub fn open(path: impl Into<PathBuf>, max_tx: u64, max_day: u64) -> Result<Self, DomainError> {
         let path = path.into();
         if let Some(parent) = path.parent() {
@@ -224,6 +250,7 @@ impl PersistedBucketLedger {
         Ok(Self { path, inner })
     }
 
+    /// Adds destinations to the in-memory policy for the selected bucket kind.
     pub fn admit_destinations(
         &self,
         kind: BucketKind,
@@ -271,6 +298,7 @@ impl PersistedBucketLedger {
         Ok(false)
     }
 
+    /// Expires old reservations and reports whether this ID remains reserved.
     pub fn has_reservation(&self, intent_id: &str) -> bool {
         let mut g = self.inner.inner.lock().expect("bucket lock");
         InMemoryBucketLedger::sweep_expired(&mut g);

@@ -1,9 +1,9 @@
 //! Over-wire multi-party Taproot FROST DKG (no dealer) — `frost-secp256k1-tr`.
 //!
 //! Mirrors `dkg_wire.rs` (plain FROST) but produces a BIP-340 even-Y Taproot
-//! keyset persisted via `persist_tr_shares` (`frost-tr-*` share ids) so that
-//! `load_tr_shares` at boot installs `runtime.frost_tr` and the deposit
-//! endpoint returns a `tb1p`/`bcrt1p` address.
+//! keyset persisted in an explicitly selected USERS or CHANNELS namespace.
+//! The namespace is bound into the transcript and storage identifiers so a
+//! CHANNELS ceremony cannot overwrite or reuse USERS material.
 //!
 //! Rounds 1 and 2 are structurally identical to the plain wire DKG (same
 //! `frost::keys::dkg::part1/part2/part3`), only the ciphersuite differs.
@@ -18,7 +18,6 @@
 //! - Transcript binding: SHA-256 over session constitution (TR-distinct domain)
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 use std::sync::Mutex;
 
 use frost_secp256k1_tr as frost;
@@ -29,10 +28,9 @@ use rand::rngs::OsRng;
 use sha2::{Digest, Sha256};
 
 use super::dkg_wire::{
-    peer_base_url, DkgStartRequest, Round1WireMessage, Round2WireMessage, Round3WireRequest, WireDkgPeerAuth,
-    WireDkgPhase, WireDkgStatus,
+    peer_base_url, DkgStartRequest, Round1WireMessage, Round2WireMessage, WireDkgPeerAuth, WireDkgPhase, WireDkgStatus,
 };
-use super::frost_tr_bitcoin::{persist_tr_shares, FrostTrShareState};
+use super::frost_tr_bitcoin::{persist_tr_channels_shares, persist_tr_shares, FrostTrShareState};
 use crate::application::ShareStorePort;
 use crate::domain::DomainError;
 use crate::{build_mtls_rustls_client_config, post_json_with_retry, PeerHttpSettings};
@@ -65,15 +63,59 @@ fn build_roster(roster: &[String]) -> Result<BTreeMap<String, Identifier>, Domai
     Ok(map)
 }
 
-/// TR-distinct transcript domain (prevents plain<->TR round-message cross-use).
+/// Independent Taproot keysets used by on-chain settlement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrDkgKeyset {
+    /// Shared USERS omnibus Taproot keyset.
+    Users,
+    /// Dedicated CHANNELS Taproot keyset with isolated transcript and storage IDs.
+    Channels,
+}
+
+impl TrDkgKeyset {
+    fn transcript_domain(self) -> &'static [u8] {
+        match self {
+            // Keep the established USERS domain stable for compatibility.
+            Self::Users => b"kerosene-dkg-tr-wire-v1|",
+            Self::Channels => b"kerosene-dkg-tr-channels-wire-v1|",
+        }
+    }
+
+    fn route_prefix(self) -> &'static str {
+        match self {
+            Self::Users => "/v1/dkg/tr",
+            Self::Channels => "/v1/dkg/tr/channels",
+        }
+    }
+}
+
+/// Computes the USERS Taproot DKG transcript hash.
+///
+/// The transcript binds session ID, signer thresholds, and sorted roster node
+/// IDs under a Taproot-specific domain, preventing cross-use with plain FROST
+/// DKG messages.
 pub fn session_transcript_tr(
     session_id: &str,
     max_signers: u16,
     min_signers: u16,
     roster: &BTreeMap<String, Identifier>,
 ) -> String {
+    session_transcript_tr_for_keyset(session_id, max_signers, min_signers, roster, TrDkgKeyset::Users)
+}
+
+/// Computes a Taproot DKG transcript hash bound to a particular keyset.
+///
+/// USERS and CHANNELS use separate domain prefixes, so their round messages
+/// cannot be mixed even when session, roster, and thresholds are otherwise equal.
+pub fn session_transcript_tr_for_keyset(
+    session_id: &str,
+    max_signers: u16,
+    min_signers: u16,
+    roster: &BTreeMap<String, Identifier>,
+    keyset: TrDkgKeyset,
+) -> String {
     let mut h = Sha256::new();
-    h.update(b"kerosene-dkg-tr-wire-v1|");
+    h.update(keyset.transcript_domain());
     h.update(session_id.as_bytes());
     h.update(b"|max=");
     h.update(max_signers.to_string().as_bytes());
@@ -169,6 +211,7 @@ fn build_http_client(auth: &WireDkgPeerAuth, peer_http: &PeerHttpSettings) -> Re
 
 /// In-memory over-wire Taproot DKG hub for one vault process.
 pub struct TrWireDkgHub {
+    keyset: TrDkgKeyset,
     local_node_id: String,
     peer_addrs: BTreeMap<String, String>,
     peer_auth: WireDkgPeerAuth,
@@ -179,14 +222,33 @@ pub struct TrWireDkgHub {
 }
 
 impl TrWireDkgHub {
+    /// Creates a distributed DKG hub for the USERS Taproot keyset.
+    ///
+    /// `peer_addrs` maps roster node IDs to their peer endpoints. The auth mode
+    /// and HTTP settings are used for subsequent outbound round fan-out.
     pub fn with_peer_http(
         local_node_id: impl Into<String>,
         peer_addrs: BTreeMap<String, String>,
         peer_auth: WireDkgPeerAuth,
         peer_http: PeerHttpSettings,
     ) -> Result<Self, DomainError> {
+        Self::with_peer_http_for_keyset(local_node_id, peer_addrs, peer_auth, peer_http, TrDkgKeyset::Users)
+    }
+
+    /// Creates a distributed DKG hub for the selected USERS or CHANNELS keyset.
+    ///
+    /// The selected namespace affects route paths, transcript domain separation,
+    /// and which share-store namespace receives the local package at finalize.
+    pub fn with_peer_http_for_keyset(
+        local_node_id: impl Into<String>,
+        peer_addrs: BTreeMap<String, String>,
+        peer_auth: WireDkgPeerAuth,
+        peer_http: PeerHttpSettings,
+        keyset: TrDkgKeyset,
+    ) -> Result<Self, DomainError> {
         let http = build_http_client(&peer_auth, &peer_http)?;
         Ok(Self {
+            keyset,
             local_node_id: local_node_id.into(),
             peer_addrs,
             peer_auth,
@@ -197,6 +259,7 @@ impl TrWireDkgHub {
         })
     }
 
+    /// Returns the outbound peer authentication mode label.
     pub fn peer_auth_mode(&self) -> &'static str {
         if self.peer_auth.is_mtls() {
             "mtls"
@@ -205,10 +268,14 @@ impl TrWireDkgHub {
         }
     }
 
+    /// Returns the last locally finalized key package, group package, and threshold.
     pub fn completed_local(&self) -> Option<(KeyPackage, PublicKeyPackage, u16)> {
         self.completed.lock().expect("tr dkg completed").clone()
     }
 
+    /// Returns the current status of a started DKG session.
+    ///
+    /// Unknown session IDs return a threshold error.
     pub fn status(&self, session_id: &str) -> Result<WireDkgStatus, DomainError> {
         let g = self.sessions.lock().expect("tr dkg sessions");
         let s = g
@@ -217,7 +284,10 @@ impl TrWireDkgHub {
         Ok(s.status())
     }
 
-    /// Start local session: run part1, freeze roster+threshold, return wire message.
+    /// Starts or resumes a local DKG session and returns its round-one message.
+    ///
+    /// The unique roster and thresholds are frozen into the transcript. Reusing
+    /// a session ID with changed participants or thresholds is rejected.
     pub fn start(&self, req: DkgStartRequest) -> Result<(WireDkgStatus, Round1WireMessage), DomainError> {
         if req.max_signers < 2 || req.min_signers < 2 || req.min_signers > req.max_signers {
             return Err(DomainError::ThresholdError(format!(
@@ -233,7 +303,8 @@ impl TrWireDkgHub {
                 req.max_signers
             )));
         }
-        let transcript_hex = session_transcript_tr(&req.session_id, req.max_signers, req.min_signers, &roster);
+        let transcript_hex =
+            session_transcript_tr_for_keyset(&req.session_id, req.max_signers, req.min_signers, &roster, self.keyset);
 
         {
             let g = self.sessions.lock().expect("tr dkg sessions");
@@ -275,8 +346,8 @@ impl TrWireDkgHub {
             DomainError::ThresholdError(format!("local node {} missing from TR DKG roster", self.local_node_id))
         })?;
 
-        let mut rng = OsRng;
-        let (secret, package) = frost::keys::dkg::part1(local_identifier, req.max_signers, req.min_signers, &mut rng)
+        let rng = OsRng;
+        let (secret, package) = frost::keys::dkg::part1(local_identifier, req.max_signers, req.min_signers, rng)
             .map_err(|e| DomainError::ThresholdError(format!("frost-tr dkg part1: {e}")))?;
 
         let package_hex = hex::encode(
@@ -320,7 +391,11 @@ impl TrWireDkgHub {
         Ok((status, wire))
     }
 
-    /// Ingest a peer's round1 package. Auto-advances to part2 when full.
+    /// Validates and records a peer's round-one package.
+    ///
+    /// Rejects unknown roster members, identifier mismatches, threshold drift,
+    /// or transcript mismatch. Once all round-one packages arrive, advances to
+    /// round two and freezes the participant roster.
     pub fn ingest_round1(&self, msg: Round1WireMessage) -> Result<WireDkgStatus, DomainError> {
         let mut g = self.sessions.lock().expect("tr dkg sessions");
         let session = g.get_mut(&msg.session_id).ok_or_else(|| {
@@ -393,6 +468,10 @@ impl TrWireDkgHub {
         Ok(())
     }
 
+    /// Drains pending round-two messages for the session's other participants.
+    ///
+    /// Messages are removed from the outbound queue as they are returned; an
+    /// unknown session or recipient identifier is reported as an error.
     pub fn take_round2_outbound(&self, session_id: &str) -> Result<Vec<Round2WireMessage>, DomainError> {
         let mut g = self.sessions.lock().expect("tr dkg sessions");
         let session = g
@@ -424,6 +503,10 @@ impl TrWireDkgHub {
         Ok(out)
     }
 
+    /// Validates and stores one peer's encrypted/private round-two package.
+    ///
+    /// The message must match this session's transcript, address this local
+    /// node, and identify a member of the frozen roster.
     pub fn ingest_round2(&self, msg: Round2WireMessage) -> Result<WireDkgStatus, DomainError> {
         let mut g = self.sessions.lock().expect("tr dkg sessions");
         let session = g
@@ -460,8 +543,12 @@ impl TrWireDkgHub {
         Ok(session.status())
     }
 
-    /// Finalize part3 when round2 inbox has n-1 packages. Persists ONLY the
-    /// local Taproot share via `persist_tr_shares` (even-Y applied).
+    /// Completes round three after receiving every other participant's package.
+    ///
+    /// Applies the even-Y Taproot convention, persists only this node's local
+    /// secret share in the selected USERS or CHANNELS namespace, and publishes
+    /// the completed local key material. Repeated calls after completion return
+    /// the completed status without persisting again.
     pub fn finalize_round3(
         &self,
         session_id: &str,
@@ -501,7 +588,10 @@ impl TrWireDkgHub {
         key_packages.insert(session.local_identifier, kp.clone());
         let tr_state =
             FrostTrShareState { key_packages, pubkey_package: pk.clone(), min_signers: session.min_signers as usize };
-        persist_tr_shares(&tr_state, share_store)?;
+        match self.keyset {
+            TrDkgKeyset::Users => persist_tr_shares(&tr_state, share_store)?,
+            TrDkgKeyset::Channels => persist_tr_channels_shares(&tr_state, share_store)?,
+        }
 
         session.key_package = Some(kp.clone());
         session.pubkey_package = Some(pk.clone());
@@ -519,13 +609,17 @@ impl TrWireDkgHub {
         }
     }
 
+    /// Sends the local round-one message to every configured peer except self.
+    ///
+    /// Uses the selected keyset route and configured retry/authentication policy;
+    /// the first terminal peer failure aborts the fan-out with an error.
     pub async fn fanout_round1(&self, msg: &Round1WireMessage) -> Result<(), DomainError> {
         let mtls = self.peer_auth.is_mtls();
         for (peer_id, addr) in &self.peer_addrs {
             if peer_id == &self.local_node_id {
                 continue;
             }
-            let url = format!("{}/v1/dkg/tr/round1", peer_base_url(addr, mtls));
+            let url = format!("{}{}/round1", peer_base_url(addr, mtls), self.keyset.route_prefix());
             let res =
                 post_json_with_retry(&self.http, &self.peer_http, &url, |req| self.apply_peer_auth_headers(req), msg)
                     .await
@@ -538,6 +632,9 @@ impl TrWireDkgHub {
         Ok(())
     }
 
+    /// Sends each round-two message to its named recipient peer.
+    ///
+    /// Missing recipient addresses and terminal HTTP failures stop the fan-out.
     pub async fn fanout_round2(&self, messages: &[Round2WireMessage]) -> Result<(), DomainError> {
         let mtls = self.peer_auth.is_mtls();
         for msg in messages {
@@ -545,7 +642,7 @@ impl TrWireDkgHub {
                 .peer_addrs
                 .get(&msg.recipient_node_id)
                 .ok_or_else(|| DomainError::ThresholdError(format!("no TR peer addr for {}", msg.recipient_node_id)))?;
-            let url = format!("{}/v1/dkg/tr/round2", peer_base_url(addr, mtls));
+            let url = format!("{}{}/round2", peer_base_url(addr, mtls), self.keyset.route_prefix());
             let res =
                 post_json_with_retry(&self.http, &self.peer_http, &url, |req| self.apply_peer_auth_headers(req), msg)
                     .await
@@ -584,15 +681,16 @@ mod tests {
         }
     }
 
-    fn three_hubs() -> (Vec<TrWireDkgHub>, DkgStartRequest) {
+    fn three_hubs(keyset: TrDkgKeyset) -> (Vec<TrWireDkgHub>, DkgStartRequest) {
         let roster = vec!["vault-1".into(), "vault-2".into(), "vault-3".into()];
         let hubs: Vec<TrWireDkgHub> = (1..=3)
             .map(|i| {
-                TrWireDkgHub::with_peer_http(
+                TrWireDkgHub::with_peer_http_for_keyset(
                     format!("vault-{i}"),
                     BTreeMap::new(),
                     WireDkgPeerAuth::StaticToken("lab-token".into()),
                     PeerHttpSettings::clearnet_defaults(),
+                    keyset,
                 )
                 .unwrap()
             })
@@ -606,11 +704,10 @@ mod tests {
         (hubs, start)
     }
 
-    #[test]
-    fn tr_wire_dkg_three_party_persists_single_local_share() {
-        let (hubs, start) = three_hubs();
+    fn complete_three_party(keyset: TrDkgKeyset, name: &str) {
+        let (hubs, start) = three_hubs(keyset);
         let session = start.session_id.clone();
-        let tmp = TempDir::new("tr");
+        let tmp = TempDir::new(name);
 
         let mut r1_msgs = Vec::new();
         for h in &hubs {
@@ -645,13 +742,38 @@ mod tests {
             assert_eq!(min, 2);
             assert_eq!(*kp.min_signers(), 2);
             vks.push(*pk.verifying_key());
-            // load_tr_shares must yield exactly 1 key package (local only).
-            let loaded = crate::adapters::load_tr_shares(&store).unwrap();
+            // The selected namespace must yield exactly one local package.
+            let loaded = match keyset {
+                TrDkgKeyset::Users => crate::adapters::load_tr_shares(&store).unwrap(),
+                TrDkgKeyset::Channels => crate::adapters::load_tr_channels_shares(&store).unwrap(),
+            };
             assert_eq!(loaded.key_packages.len(), 1);
             assert_eq!(*loaded.pubkey_package.verifying_key(), *pk.verifying_key());
+            match keyset {
+                TrDkgKeyset::Users => assert!(crate::adapters::load_tr_channels_shares(&store).is_err()),
+                TrDkgKeyset::Channels => assert!(crate::adapters::load_tr_shares(&store).is_err()),
+            }
         }
         // All 3 vaults share the same group verifying key.
         assert_eq!(vks[0], vks[1]);
         assert_eq!(vks[1], vks[2]);
+    }
+
+    #[test]
+    fn tr_wire_dkg_three_party_persists_single_local_users_share() {
+        complete_three_party(TrDkgKeyset::Users, "users");
+    }
+
+    #[test]
+    fn tr_wire_dkg_three_party_persists_isolated_channels_share() {
+        complete_three_party(TrDkgKeyset::Channels, "channels");
+    }
+
+    #[test]
+    fn users_and_channels_transcripts_are_domain_separated() {
+        let roster = build_roster(&["vault-1".into(), "vault-2".into(), "vault-3".into()]).unwrap();
+        let users = session_transcript_tr_for_keyset("same-session", 3, 2, &roster, TrDkgKeyset::Users);
+        let channels = session_transcript_tr_for_keyset("same-session", 3, 2, &roster, TrDkgKeyset::Channels);
+        assert_ne!(users, channels);
     }
 }

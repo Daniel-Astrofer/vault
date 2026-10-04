@@ -14,7 +14,9 @@ use crate::VaultIdentity;
 /// A combined Ed25519 + ML-DSA-65 signature.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HybridSignature {
+    /// Ed25519 signature bytes over the original message.
     pub ed25519: Vec<u8>,
+    /// ML-DSA-65 signature bytes over the same original message.
     pub ml_dsa65: Vec<u8>,
 }
 
@@ -28,7 +30,9 @@ impl AsRef<[u8]> for HybridSignature {
 /// Combined Ed25519 + ML-DSA-65 keypair for hybrid cryptographic identity.
 #[derive(Debug, Clone, Zeroize, ZeroizeOnDrop)]
 pub struct HybridKeyPair {
+    /// Classical Ed25519 keypair, used as one half of the mandatory signature.
     pub ed25519: Ed25519Identity,
+    /// Post-quantum ML-DSA-65 keypair, used as the other mandatory half.
     pub ml_dsa65: MlDsa65Identity,
     /// Human-readable node identifier.
     pub node_id: String,
@@ -142,7 +146,7 @@ mod tests {
         let msg = b"hybrid signing test message";
         let sig = kp.sign_hybrid(msg).unwrap();
         let ed_pk = kp.ed25519.verifying_key_bytes();
-        assert!(HybridKeyPair::verify_hybrid(&ed_pk, &kp.ml_dsa65.public_key(), msg, &sig).unwrap());
+        assert!(HybridKeyPair::verify_hybrid(&ed_pk, kp.ml_dsa65.public_key(), msg, &sig).unwrap());
     }
 
     #[test]
@@ -150,7 +154,7 @@ mod tests {
         let kp = HybridKeyPair::generate("vault-2").unwrap();
         let sig = kp.sign_hybrid(b"real message").unwrap();
         let ed_pk = kp.ed25519.verifying_key_bytes();
-        assert!(!HybridKeyPair::verify_hybrid(&ed_pk, &kp.ml_dsa65.public_key(), b"fake message", &sig).unwrap());
+        assert!(!HybridKeyPair::verify_hybrid(&ed_pk, kp.ml_dsa65.public_key(), b"fake message", &sig).unwrap());
     }
 
     #[test]
@@ -164,7 +168,7 @@ mod tests {
         // Verify the restored keypair can sign and verify
         let sig = restored.sign_hybrid(b"roundtrip test").unwrap();
         let ed_pk = restored.ed25519.verifying_key_bytes();
-        assert!(HybridKeyPair::verify_hybrid(&ed_pk, &restored.ml_dsa65.public_key(), b"roundtrip test", &sig).unwrap());
+        assert!(HybridKeyPair::verify_hybrid(&ed_pk, restored.ml_dsa65.public_key(), b"roundtrip test", &sig).unwrap());
     }
 
     #[test]

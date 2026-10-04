@@ -11,11 +11,15 @@ struct LedgerState {
     proposals: HashMap<String, EpochAdvanceProposal>,
 }
 
+/// Mutex-protected, non-persistent implementation of the ledger port.
 pub struct InMemoryLedger {
     state: Mutex<LedgerState>,
 }
 
 impl InMemoryLedger {
+    /// Creates an in-memory ledger with a validated constitution and genesis entry.
+    ///
+    /// The supplied writer must be part of the epoch active set for later appends.
     pub fn genesis(constitution: Constitution, active_set: Vec<NodeId>, writer: NodeId) -> Result<Self, DomainError> {
         constitution.validate()?;
         let epoch = Epoch::genesis(&constitution, active_set)?;
@@ -28,27 +32,33 @@ impl InMemoryLedger {
 }
 
 impl LedgerPort for InMemoryLedger {
+    /// Returns a clone of the ledger constitution.
     fn constitution(&self) -> Result<Constitution, DomainError> {
         Ok(self.state.lock().expect("ledger").constitution.clone())
     }
 
+    /// Returns a clone of the current epoch state.
     fn epoch(&self) -> Result<Epoch, DomainError> {
         Ok(self.state.lock().expect("ledger").epoch.clone())
     }
 
+    /// Replaces the current epoch state in memory.
     fn set_epoch(&self, epoch: Epoch) -> Result<(), DomainError> {
         self.state.lock().expect("ledger").epoch = epoch;
         Ok(())
     }
 
+    /// Returns the current chain head, if the ledger has any entries.
     fn head(&self) -> Result<Option<LedgerEntry>, DomainError> {
         Ok(self.state.lock().expect("ledger").entries.last().cloned())
     }
 
+    /// Returns a cloned snapshot of all ledger entries.
     fn entries(&self) -> Result<Vec<LedgerEntry>, DomainError> {
         Ok(self.state.lock().expect("ledger").entries.clone())
     }
 
+    /// Appends an entry after validating index, previous hash, and active-set writer.
     fn append(&self, entry: LedgerEntry) -> Result<(), DomainError> {
         let mut guard = self.state.lock().expect("ledger");
         if let Some(prev) = guard.entries.last() {
@@ -73,6 +83,7 @@ impl LedgerPort for InMemoryLedger {
         Ok(())
     }
 
+    /// Inserts a proposal, rejecting an ID that already exists.
     fn put_proposal(&self, proposal: EpochAdvanceProposal) -> Result<(), DomainError> {
         let mut guard = self.state.lock().expect("ledger");
         if guard.proposals.contains_key(&proposal.id) {
@@ -82,6 +93,7 @@ impl LedgerPort for InMemoryLedger {
         Ok(())
     }
 
+    /// Returns the proposal with this ID or an unknown-proposal error.
     fn get_proposal(&self, id: &str) -> Result<EpochAdvanceProposal, DomainError> {
         self.state
             .lock()
@@ -92,6 +104,7 @@ impl LedgerPort for InMemoryLedger {
             .ok_or_else(|| DomainError::UnknownProposal(id.to_string()))
     }
 
+    /// Inserts or replaces the proposal under its ID.
     fn save_proposal(&self, proposal: EpochAdvanceProposal) -> Result<(), DomainError> {
         let mut guard = self.state.lock().expect("ledger");
         guard.proposals.insert(proposal.id.clone(), proposal);

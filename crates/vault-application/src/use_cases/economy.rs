@@ -1,5 +1,10 @@
 //! Miner economy use cases (F9): accrue p%, governance job bounty, propose bank-issued MINERS Intents.
 
+//! Application workflows for miner pools, governance rewards, and payout proposals.
+//!
+//! These use cases coordinate domain policies with ports; actual payout execution
+//! remains with the bank, and ledger entries record the resulting accounting events.
+
 use std::sync::Arc;
 
 use crate::ports::{ClockPort, EconomyPort, LedgerPort};
@@ -9,6 +14,7 @@ use vault_domain::{
     SettlementIntent, VaultNodeTier,
 };
 
+/// Query object that assembles economy, constitution, and node trust information.
 pub struct GetEconomyStatus {
     economy: Arc<dyn EconomyPort>,
     ledger: Arc<dyn LedgerPort>,
@@ -20,6 +26,7 @@ pub struct GetEconomyStatus {
 }
 
 impl GetEconomyStatus {
+    /// Create the status query with its repositories and node-local trust metadata.
     pub fn new(
         economy: Arc<dyn EconomyPort>,
         ledger: Arc<dyn LedgerPort>,
@@ -32,6 +39,10 @@ impl GetEconomyStatus {
         Self { economy, ledger, governance_reward, payout_cadence, node_tier, attestation_mode, tee_available }
     }
 
+    /// Read the current pools and policy into a presentation view.
+    ///
+    /// The `online` participant count is currently modeled as the constitution's
+    /// signing set size (lab assumption), not measured live peer reachability.
     pub fn execute(&self) -> Result<EconomyStatusView, DomainError> {
         let constitution = self.ledger.constitution()?;
         let eco = self.economy.snapshot()?;
@@ -66,33 +77,59 @@ impl GetEconomyStatus {
     }
 }
 
+/// API view of economy pools, payout configuration, operator counts, and trust status.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EconomyStatusView {
+    /// Current miner payout pool balance, in satoshis.
     pub miner_pool_sats: u64,
+    /// Current channel operations pool balance, in satoshis.
     pub channels_pool_sats: u64,
+    /// Current infrastructure pool balance, in satoshis.
     pub infra_pool_sats: u64,
+    /// Cumulative profit accrued across pools, in satoshis.
     pub accrued_profit_sats: u64,
+    /// Governance bounty amount accrued but not yet settled by bank intent.
     pub pending_governance_reward_sats: u64,
+    /// Fixed configured governance bounty, in satoshis.
     pub governance_reward_sats: u64,
+    /// Pool-proportional governance bounty, in basis points.
     pub governance_reward_bps: u32,
+    /// Constitution's miner reward share, in basis points.
     pub p_reward_bps: u32,
+    /// Constitution's channel allocation share, in basis points.
     pub channels_bps: u32,
+    /// Constitution's infrastructure allocation share, in basis points.
     pub infra_bps: u32,
+    /// Canonical name of the configured miner payout cadence.
     pub miner_payout_cadence: String,
+    /// Timestamp of the last payout, absent when no payout has been recorded.
     pub last_miner_payout_at_secs: Option<u64>,
+    /// Number of operators currently eligible for active payouts.
     pub eligible_miners: usize,
+    /// Number of registered operators marked as waiting.
     pub waiting_miners: usize,
+    /// Active classical/hybrid crypto suite identifier from the constitution.
     pub crypto_suite_id: String,
+    /// Optional post-quantum suite identifier tracked by economy state.
     pub crypto_suite_id_pq: String,
+    /// Whether the modeled online count meets the signing survivability threshold.
     pub survivability_ok: bool,
+    /// Whether the profit split allocates a nonzero share to miners.
     pub open_economy: bool,
+    /// Canonical node hardware/trust tier label.
     pub node_tier: String,
+    /// Canonical platform attestation mode label.
     pub attestation_mode: String,
+    /// Whether local hardware reports TEE availability.
     pub tee_available: bool,
+    /// Informational governance weight for the node tier, in basis points.
     pub tier_governance_weight_bps: u32,
 }
 
 impl EconomyStatusView {
+    /// Serialize the view to the current JSON API representation.
+    ///
+    /// An absent last-payout timestamp is encoded as JSON `null`.
     pub fn to_json(&self) -> String {
         let last = self.last_miner_payout_at_secs.map(|n| n.to_string()).unwrap_or_else(|| "null".into());
         format!(
@@ -123,20 +160,24 @@ impl EconomyStatusView {
     }
 }
 
+/// Use case for registering or updating a miner operator.
 pub struct UpsertMiner {
     economy: Arc<dyn EconomyPort>,
 }
 
 impl UpsertMiner {
+    /// Create the use case with the economy persistence port.
     pub fn new(economy: Arc<dyn EconomyPort>) -> Self {
         Self { economy }
     }
 
+    /// Store the operator record used for eligibility and payout destination checks.
     pub fn execute(&self, op: MinerOperator) -> Result<(), DomainError> {
         self.economy.upsert_operator(op)
     }
 }
 
+/// Use case that allocates incoming profit and records a chained ledger event.
 pub struct AccrueMinerRewards {
     economy: Arc<dyn EconomyPort>,
     ledger: Arc<dyn LedgerPort>,
@@ -144,10 +185,15 @@ pub struct AccrueMinerRewards {
 }
 
 impl AccrueMinerRewards {
+    /// Create the accrual workflow with economy and ledger ports and the event writer.
     pub fn new(economy: Arc<dyn EconomyPort>, ledger: Arc<dyn LedgerPort>, writer: NodeId) -> Self {
         Self { economy, ledger, writer }
     }
 
+    /// Allocate profit using the active constitution, then append a `ProfitAllocated` ledger entry.
+    ///
+    /// The operation returns an error if constitution lookup, pool accrual, ledger
+    /// reads, or append fail. Pool mutation occurs before ledger append.
     pub fn execute(&self, profit_sats: u64) -> Result<AccrueReceipt, DomainError> {
         let constitution = self.ledger.constitution()?;
         let split = self.economy.accrue_profit_splits(profit_sats, &constitution.profit_splits)?;
@@ -189,19 +235,29 @@ impl AccrueMinerRewards {
     }
 }
 
+/// Result of profit allocation, including the updated pool balances.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccrueReceipt {
+    /// Gross profit allocated by this operation, in satoshis.
     pub profit_sats: u64,
+    /// Amount credited to the miner pool, in satoshis.
     pub accrued_to_pool_sats: u64,
+    /// Amount allocated to channel operations, in satoshis.
     pub channels_sats: u64,
+    /// Amount allocated to infrastructure, in satoshis.
     pub infra_sats: u64,
+    /// Resulting miner pool balance, in satoshis.
     pub miner_pool_sats: u64,
+    /// Resulting channels pool balance, in satoshis.
     pub channels_pool_sats: u64,
+    /// Resulting infrastructure pool balance, in satoshis.
     pub infra_pool_sats: u64,
+    /// Miner reward percentage from the active constitution, in basis points.
     pub p_reward_bps: u32,
 }
 
 impl AccrueReceipt {
+    /// Serialize the accounting result to its current JSON response representation.
     pub fn to_json(&self) -> String {
         format!(
             r#"{{"profit_sats":{},"accrued_to_pool_sats":{},"channels_sats":{},"infra_sats":{},"miner_pool_sats":{},"channels_pool_sats":{},"infra_pool_sats":{},"p_reward_bps":{}}}"#,
@@ -226,6 +282,7 @@ pub struct AccrueGovernanceWork {
 }
 
 impl AccrueGovernanceWork {
+    /// Create the governance-reward workflow with repositories, event writer, and bounty policy.
     pub fn new(
         economy: Arc<dyn EconomyPort>,
         ledger: Arc<dyn LedgerPort>,
@@ -235,10 +292,16 @@ impl AccrueGovernanceWork {
         Self { economy, ledger, writer, config }
     }
 
+    /// Return the immutable bounty configuration used by this use case.
     pub fn config(&self) -> GovernanceRewardConfig {
         self.config
     }
 
+    /// Accrue a bounty for eligible participants and append the accounting ledger event.
+    ///
+    /// Disabled reward configuration returns a zero accrual without touching the
+    /// ledger. Otherwise, the ledger append is skipped when the calculated bounty
+    /// and amount accrued to the pool are both zero.
     pub fn execute(
         &self,
         job: GovernanceJobKind,
@@ -293,11 +356,13 @@ impl AccrueGovernanceWork {
     }
 }
 
+/// Escape backslashes and quotes for the manually assembled governance event payload.
 fn escape_json(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 /// Propose equal MINERS Intents for the bank to submit — vaults do not broadcast payouts.
+/// Use case for reserving miner-pool funds and producing bank-issued payout intents.
 pub struct ProposeMinerPayouts {
     economy: Arc<dyn EconomyPort>,
     ledger: Arc<dyn LedgerPort>,
@@ -306,6 +371,7 @@ pub struct ProposeMinerPayouts {
 }
 
 impl ProposeMinerPayouts {
+    /// Create the proposal workflow with economy, ledger, clock, and cadence dependencies.
     pub fn new(
         economy: Arc<dyn EconomyPort>,
         ledger: Arc<dyn LedgerPort>,
@@ -315,6 +381,11 @@ impl ProposeMinerPayouts {
         Self { economy, ledger, clock, payout_cadence }
     }
 
+    /// Divide `amount` among eligible miners, build MINERS intents, and debit the pool.
+    ///
+    /// The cadence is checked before generating intents. Each destination must
+    /// still match an eligible registered operator. The returned intents are
+    /// proposals for the bank to submit; this use case does not broadcast payments.
     pub fn execute(&self, amount: u64, intent_prefix: &str) -> Result<PayoutProposal, DomainError> {
         let constitution = self.ledger.constitution()?;
         let now = self.clock.unix_now_secs();
@@ -333,14 +404,19 @@ impl ProposeMinerPayouts {
     }
 }
 
+/// Bank-submittable payout intents and their aggregate amount.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PayoutProposal {
+    /// Sum of the per-miner allocations, in satoshis.
     pub total_sats: u64,
+    /// Per-operator amounts and registered destinations used to build the intents.
     pub shares: Vec<MinerPayoutShare>,
+    /// Settlement intents for the bank to submit on behalf of the miners.
     pub intents: Vec<SettlementIntent>,
 }
 
 impl PayoutProposal {
+    /// Serialize the aggregate amount and intent details into the current JSON response.
     pub fn to_json(&self) -> String {
         let parts: Vec<String> = self
             .intents
@@ -361,6 +437,10 @@ impl PayoutProposal {
     }
 }
 
+/// Serialize economy balances, operator eligibility, and governance credits to JSON.
+///
+/// The operator objects expose eligibility and reward metrics but not payout
+/// destinations. Identifiers are interpolated directly by the current formatter.
 pub fn economy_snapshot_json(eco: &EconomyState) -> String {
     let ops: Vec<String> = eco
         .operators
@@ -401,7 +481,7 @@ pub fn is_payout_epoch(frequency: MinerPayoutCadence, day_epoch: u64) -> bool {
     match frequency {
         MinerPayoutCadence::Manual => false,
         MinerPayoutCadence::Daily => true,
-        MinerPayoutCadence::Weekly => day_epoch % 7 == 0,
+        MinerPayoutCadence::Weekly => day_epoch.is_multiple_of(7),
         MinerPayoutCadence::Epoch => false, // epoch payout gated by explicit epoch-based governance trigger
     }
 }

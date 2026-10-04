@@ -221,9 +221,10 @@ mod tests {
         // Add commitments
         {
             let session = manager.get_session_mut(&session_id).unwrap();
-            let mut rng = rand::rngs::OsRng;
             let (shares, _) =
-                frost::keys::generate_with_dealer(2, 2, frost::keys::IdentifierList::Default, &mut rng).unwrap();
+                frost::keys::generate_with_dealer(2, 2, frost::keys::IdentifierList::Default, rand::rngs::OsRng)
+                    .unwrap();
+            let mut rng = rand::rngs::OsRng;
             let (_, commitments1) = frost::round1::commit(shares[&id1].signing_share(), &mut rng);
             let (_, commitments2) = frost::round1::commit(shares[&id2].signing_share(), &mut rng);
 

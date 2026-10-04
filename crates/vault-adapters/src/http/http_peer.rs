@@ -10,11 +10,16 @@ use crate::domain::DomainError;
 /// Outbound mesh transport: clearnet LAN vs Tor SOCKS to onion peers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VaultTransport {
+    /// Connect directly to a peer over the configured network.
     Clearnet,
+    /// Route peer connections through a SOCKS proxy to Tor onion services.
     Tor,
 }
 
 impl VaultTransport {
+    /// Parses direct-network and Tor aliases, ignoring surrounding whitespace and case.
+    ///
+    /// Returns `None` for values that do not identify either supported transport.
     pub fn parse(raw: &str) -> Option<Self> {
         match raw.trim().to_ascii_lowercase().as_str() {
             "clearnet" | "lan" | "direct" => Some(Self::Clearnet),
@@ -23,6 +28,7 @@ impl VaultTransport {
         }
     }
 
+    /// Returns the canonical configuration value for this transport.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Clearnet => "clearnet",
@@ -30,6 +36,7 @@ impl VaultTransport {
         }
     }
 
+    /// Reports whether requests should use Tor routing.
     pub fn is_tor(self) -> bool {
         matches!(self, Self::Tor)
     }
@@ -38,17 +45,24 @@ impl VaultTransport {
 /// Tunables for vault↔vault HTTP (DKG, anti-nonce).
 #[derive(Debug, Clone)]
 pub struct PeerHttpSettings {
+    /// Selects the intended direct or Tor peer network.
     pub transport: VaultTransport,
-    /// e.g. `socks5h://127.0.0.1:9050` (hostname resolution via proxy — required for `.onion`).
+    /// Optional proxy URL; use `socks5h` to resolve `.onion` names through Tor.
     pub socks_proxy: Option<String>,
+    /// Maximum total duration for an HTTP request.
     pub timeout: Duration,
+    /// Maximum duration allowed to establish a connection.
     pub connect_timeout: Duration,
+    /// Maximum attempts including the initial request; zero is treated as one.
     pub max_retries: u32,
+    /// Base delay in milliseconds for exponential retry backoff.
     pub retry_base_ms: u64,
+    /// Maximum random jitter added to the backoff delay, in milliseconds.
     pub retry_jitter_ms: u64,
 }
 
 impl PeerHttpSettings {
+    /// Returns direct-network defaults intended for a low-latency peer LAN.
     pub fn clearnet_defaults() -> Self {
         Self {
             transport: VaultTransport::Clearnet,
@@ -61,6 +75,7 @@ impl PeerHttpSettings {
         }
     }
 
+    /// Returns slower retry and timeout defaults suitable for Tor circuits.
     pub fn tor_defaults() -> Self {
         Self {
             transport: VaultTransport::Tor,
@@ -74,6 +89,7 @@ impl PeerHttpSettings {
         }
     }
 
+    /// Trims a proxy value and adds `socks5h://` when it has no recognized scheme.
     pub fn normalize_socks_proxy(raw: &str) -> String {
         let t = raw.trim();
         if t.starts_with("socks5h://")
@@ -88,6 +104,9 @@ impl PeerHttpSettings {
         }
     }
 
+    /// Applies the configured timeout and proxy to an asynchronous reqwest builder.
+    ///
+    /// Returns an attestation rejection error when the proxy URL is invalid.
     pub fn apply_builder(&self, mut builder: reqwest::ClientBuilder) -> Result<reqwest::ClientBuilder, DomainError> {
         builder = builder.timeout(self.timeout).connect_timeout(self.connect_timeout);
         if let Some(proxy_url) = self.socks_proxy.as_deref() {
@@ -98,6 +117,9 @@ impl PeerHttpSettings {
         Ok(builder)
     }
 
+    /// Applies the configured timeout and proxy to a blocking reqwest builder.
+    ///
+    /// Returns an attestation rejection error when the proxy URL is invalid.
     pub fn apply_blocking_builder(
         &self,
         mut builder: reqwest::blocking::ClientBuilder,
@@ -111,31 +133,42 @@ impl PeerHttpSettings {
         Ok(builder)
     }
 
+    /// Builds an asynchronous client with this settings object's timeout and proxy.
     pub fn build_async_client(&self) -> Result<reqwest::Client, DomainError> {
         self.apply_builder(reqwest::Client::builder())?
             .build()
             .map_err(|e| DomainError::ThresholdError(format!("peer http client: {e}")))
     }
 
+    /// Builds a blocking client with this settings object's timeout and proxy.
     pub fn build_blocking_client(&self) -> Result<reqwest::blocking::Client, DomainError> {
         self.apply_blocking_builder(reqwest::blocking::Client::builder())?
             .build()
             .map_err(|e| DomainError::ThresholdError(format!("peer http client: {e}")))
     }
 
-    /// Sleep for exponential backoff with jitter before retry `attempt` (0-based after first fail).
+    /// Computes exponential backoff plus random jitter for a retry attempt.
+    ///
+    /// `attempt` is zero-based after the first failure; the exponent is capped
+    /// to avoid an unbounded shift, while duration arithmetic saturates.
     pub fn backoff_delay(&self, attempt: u32) -> Duration {
         let exp = self.retry_base_ms.saturating_mul(1u64 << attempt.min(6));
         let jitter = if self.retry_jitter_ms == 0 { 0 } else { rand::thread_rng().gen_range(0..=self.retry_jitter_ms) };
         Duration::from_millis(exp.saturating_add(jitter))
     }
 
+    /// Returns whether an HTTP status is retryable under the peer policy.
+    ///
+    /// Only server errors and `408 Request Timeout` are retried.
     pub fn should_retry_status(status: reqwest::StatusCode) -> bool {
         status.is_server_error() || status == reqwest::StatusCode::REQUEST_TIMEOUT
     }
 }
 
 /// True when peer address is an onion (with or without scheme/port).
+///
+/// This is a hostname suffix check only; it does not validate the address or
+/// establish that the request is routed through Tor.
 pub fn peer_addr_is_onion(addr: &str) -> bool {
     let host = addr
         .trim()
@@ -150,7 +183,11 @@ pub fn peer_addr_is_onion(addr: &str) -> bool {
     host.ends_with(".onion")
 }
 
-/// POST with retries; retries on transport errors and 5xx.
+/// Posts a JSON body to a peer with authentication and configured retries.
+///
+/// Retries transport failures, server errors, and request-timeout responses;
+/// other non-success statuses fail immediately. The returned response remains
+/// unread for the caller. Exhausting retries returns the last failure details.
 pub async fn post_json_with_retry(
     client: &reqwest::Client,
     settings: &PeerHttpSettings,

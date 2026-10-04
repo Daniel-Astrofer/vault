@@ -1,13 +1,18 @@
 use crate::NodeId;
 
+/// Coarse lifecycle/readiness classification exposed by a node health probe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HealthStatus {
+    /// Process is initializing and has not completed its local readiness checks.
     Starting,
+    /// The node's configured health checks report the requested readiness level.
     Ready,
+    /// The node is running but one or more health checks are not satisfied.
     Degraded,
 }
 
 impl HealthStatus {
+    /// Return the stable lowercase health label used in JSON responses.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Starting => "starting",
@@ -26,10 +31,16 @@ pub enum PeerReachability {
     /// Peers listed in directory only; TCP/Tor not probed.
     DirectoryOnly,
     /// Clearnet TCP probe attempted (optional cheap signal).
-    Probed { reachable: usize, configured: usize },
+    Probed {
+        /// Number of configured peers that accepted the probe.
+        reachable: usize,
+        /// Total number of peers included in the probe set.
+        configured: usize,
+    },
 }
 
 impl PeerReachability {
+    /// Return the stable lowercase reachability label, omitting probe counts.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::None => "none",
@@ -39,13 +50,20 @@ impl PeerReachability {
     }
 }
 
+/// Snapshot of local node, membership, attestation, and peer readiness signals.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeHealth {
+    /// Identifier of the node reporting this health snapshot.
     pub node_id: NodeId,
+    /// Coarse lifecycle status derived by the health service.
     pub status: HealthStatus,
+    /// Configured membership tier label for this node.
     pub node_tier: String,
+    /// Attestation mechanism currently selected by this node.
     pub attestation_mode: String,
+    /// Whether the local environment exposes the required TEE capability.
     pub tee_available: bool,
+    /// Number of peers known to discovery; this does not prove they are reachable.
     pub peer_count: usize,
     /// Seated genesis / wire-DKG roster (SEV-priority); empty if unknown.
     pub genesis_roster: Vec<String>,
@@ -55,6 +73,7 @@ pub struct NodeHealth {
     pub peers_reachable: Option<usize>,
     /// Constitution size is independent from currently discovered peers.
     pub configured_members: usize,
+    /// Minimum signing participant count required by the configured constitution.
     pub required_threshold: usize,
     /// Local process/storage readiness. Does not imply membership or signing readiness.
     pub local_ready: bool,
@@ -63,7 +82,10 @@ pub struct NodeHealth {
 }
 
 impl NodeHealth {
-    /// Public unauthenticated probe — status only (no node_id / roster / tier).
+    /// Render the unauthenticated health response without node identity or roster details.
+    ///
+    /// The public view contains status and readiness/count signals only, limiting
+    /// disclosure of membership and attestation configuration.
     pub fn to_public_json(&self) -> String {
         format!(
             r#"{{"status":"{}","local_ready":{},"financial_ready":{},"peer_count":{},"configured_members":{},"required_threshold":{},"peer_reachability":"{}"}}"#,
@@ -77,7 +99,10 @@ impl NodeHealth {
         )
     }
 
-    /// Authenticated detail (ops / ceremony checklist) — includes roster and tier.
+    /// Render the authenticated operational health view, including identity and roster.
+    ///
+    /// Optional probe counts are emitted as JSON `null` when no reachability probe
+    /// was attempted. String values are serialized with `serde_json` escaping.
     pub fn to_json(&self) -> String {
         let roster = self
             .genesis_roster

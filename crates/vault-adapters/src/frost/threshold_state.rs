@@ -7,6 +7,10 @@ use crate::domain::{
     KeyShare, PartialSignature, SigningPhase, SigningSession,
 };
 
+/// In-memory threshold-signing state used by the lab signing implementation.
+///
+/// The mutex protects group material, active sessions, nonce commitments, and
+/// consumed session IDs as one synchronized state machine.
 pub struct ThresholdVaultState {
     inner: Mutex<Inner>,
 }
@@ -21,6 +25,9 @@ struct Inner {
 }
 
 impl ThresholdVaultState {
+    /// Creates signing state from group parameters, this node's share, and lab shares.
+    ///
+    /// `lab_all_shares` is used only by the local all-shares collection helper.
     pub fn new(group: GroupKey, local_share: KeyShare, lab_all_shares: Vec<KeyShare>) -> Self {
         Self {
             inner: Mutex::new(Inner {
@@ -34,10 +41,15 @@ impl ThresholdVaultState {
         }
     }
 
+    /// Returns a clone of the configured threshold group parameters.
     pub fn group(&self) -> GroupKey {
         self.inner.lock().expect("threshold").group.clone()
     }
 
+    /// Opens a unique signing session and binds this node's nonce commitment.
+    ///
+    /// The online count must meet the group threshold. Session IDs and derived
+    /// nonce commitments cannot be reused, including for sessions already open.
     pub fn begin_session(
         &self,
         session_id: &str,
@@ -70,6 +82,10 @@ impl ThresholdVaultState {
         Ok(session)
     }
 
+    /// Creates and records this node's partial signature for an open session.
+    ///
+    /// The session must be in `NoncesBound` or `Open`; consumed or unknown
+    /// sessions and duplicate share indices are rejected.
     pub fn contribute_local_partial(&self, session_id: &str) -> Result<PartialSignature, DomainError> {
         let mut g = self.inner.lock().expect("threshold");
         if g.consumed_sessions.contains(session_id) {
@@ -104,6 +120,11 @@ impl ThresholdVaultState {
         Ok(partial)
     }
 
+    /// Collects partials from the first `online` shares in the lab-only share list.
+    ///
+    /// This bypasses remote participant execution and must not be used by a
+    /// distributed production signer. It requires an existing session and a
+    /// threshold-satisfying online count.
     pub fn lab_collect_partials_from_all(
         &self,
         session_id: &str,
@@ -146,6 +167,11 @@ impl ThresholdVaultState {
         Ok(out)
     }
 
+    /// Interpolates the first threshold number of session partials and consumes the session.
+    ///
+    /// Fails when online participants or collected partials do not meet the
+    /// group threshold. On success the session is marked consumed and cannot
+    /// be combined again.
     pub fn combine(&self, session_id: &str, online: usize) -> Result<CombinedSignature, DomainError> {
         let mut g = self.inner.lock().expect("threshold");
         let need = g.group.t;
@@ -177,6 +203,7 @@ impl ThresholdVaultState {
 }
 
 impl SigningPort for ThresholdVaultState {
+    /// Delegates session creation to the in-memory signing state.
     fn begin_session(
         &self,
         session_id: &str,
@@ -186,10 +213,12 @@ impl SigningPort for ThresholdVaultState {
         ThresholdVaultState::begin_session(self, session_id, message_hash, online)
     }
 
+    /// Collects all lab partials, discarding the returned partial list.
     fn collect_lab_partials(&self, session_id: &str, online: usize) -> Result<(), DomainError> {
         self.lab_collect_partials_from_all(session_id, online).map(|_| ())
     }
 
+    /// Delegates aggregation and session consumption to the in-memory state.
     fn combine(&self, session_id: &str, online: usize) -> Result<CombinedSignature, DomainError> {
         ThresholdVaultState::combine(self, session_id, online)
     }

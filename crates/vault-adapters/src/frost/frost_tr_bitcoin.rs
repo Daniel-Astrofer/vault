@@ -19,10 +19,8 @@ use bitcoin::taproot::Signature as TaprootSignature;
 use bitcoin::{Address, ScriptBuf, TxOut};
 use frost_secp256k1_tr as frost;
 use frost_secp256k1_tr::keys::{EvenY, KeyPackage, PublicKeyPackage, Tweak};
-use frost_secp256k1_tr::round2::SignatureShare;
-use frost_secp256k1_tr::{Identifier, Signature, SigningPackage};
+use frost_secp256k1_tr::Identifier;
 use rand::rngs::OsRng;
-use zeroize::Zeroize;
 
 use crate::adapters::{destination_script_pubkey, to_bitcoin_network, validate_psbt};
 use crate::application::{AntiNoncePort, DailyRotationPort, ShareStorePort};
@@ -38,26 +36,39 @@ const TR_CHANNELS_ROSTER_SHARE_ID: &str = "frost-tr-channels-roster";
 const TR_CHANNELS_MIN_SHARE_ID: &str = "frost-tr-channels-min-signers";
 
 #[derive(Clone)]
+/// In-memory Taproot FROST material for one signing group.
+///
+/// The package map contains one secret share per local participant identifier;
+/// `pubkey_package` describes the common group key and `min_signers` is the
+/// quorum required by that key set. Keep these values from the same DKG or
+/// refresh operation.
 pub struct FrostTrShareState {
+    /// Secret signing packages keyed by this participant's FROST identifier.
     pub key_packages: BTreeMap<Identifier, KeyPackage>,
+    /// Public group package shared by all participants.
     pub pubkey_package: PublicKeyPackage,
+    /// Minimum number of shares required to produce a valid signature.
     pub min_signers: usize,
 }
 
+/// Thread-safe, replaceable holder for the currently installed Taproot shares.
 #[derive(Default)]
 pub struct FrostTrShareSlot {
     inner: RwLock<Option<FrostTrShareState>>,
 }
 
 impl FrostTrShareSlot {
+    /// Creates an empty slot. Use [`install`](Self::install) before signing.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Installs the initial share state, replacing any state already present.
     pub fn install(&self, state: FrostTrShareState) {
         *self.inner.write().expect("tr share lock") = Some(state);
     }
 
+    /// Clones the current state or returns a threshold error when uninitialized.
     pub fn snapshot(&self) -> Result<FrostTrShareState, DomainError> {
         self.inner
             .read()
@@ -66,16 +77,23 @@ impl FrostTrShareSlot {
             .ok_or_else(|| DomainError::ThresholdError("taproot FROST shares not installed".into()))
     }
 
+    /// Atomically replaces the current share state after a DKG or refresh.
     pub fn replace(&self, state: FrostTrShareState) {
         *self.inner.write().expect("tr share lock") = Some(state);
     }
 
+    /// Reports whether signing material has been installed.
     pub fn is_installed(&self) -> bool {
         self.inner.read().expect("tr share lock").is_some()
     }
 }
 
-/// Persist Taproot FROST key packages via ShareStorePort (AEAD lab / TEE seal).
+/// Persists the USERS omnibus Taproot FROST packages through the share store.
+///
+/// Secret packages are serialized separately by participant identifier; the
+/// roster, public package, and threshold are stored under fixed USERS keys.
+/// The supplied store is responsible for providing the required sealing and
+/// access controls. A store error or serialization error aborts the operation.
 pub fn persist_tr_shares(state: &FrostTrShareState, store: &dyn ShareStorePort) -> Result<(), DomainError> {
     let mut roster = Vec::new();
     for (id, kp) in &state.key_packages {
@@ -95,7 +113,10 @@ pub fn persist_tr_shares(state: &FrostTrShareState, store: &dyn ShareStorePort) 
     Ok(())
 }
 
-/// Load Taproot FROST material previously sealed by [`persist_tr_shares`].
+/// Loads USERS omnibus Taproot FROST packages written by [`persist_tr_shares`].
+///
+/// Returns an error for missing/corrupt stored values, malformed roster data,
+/// invalid serialized packages, or an empty roster.
 pub fn load_tr_shares(store: &dyn ShareStorePort) -> Result<FrostTrShareState, DomainError> {
     let roster_raw = store.get_share(TR_ROSTER_SHARE_ID)?;
     let roster = String::from_utf8(roster_raw)
@@ -126,7 +147,10 @@ pub fn load_tr_shares(store: &dyn ShareStorePort) -> Result<FrostTrShareState, D
     Ok(FrostTrShareState { key_packages, pubkey_package, min_signers })
 }
 
-/// Persist CHANNELS Taproot FROST key packages (≠ USERS omnibus share ids).
+/// Persists the CHANNELS Taproot FROST packages under their separate key namespace.
+///
+/// This prevents the CHANNELS key set from overwriting the USERS omnibus
+/// material when both groups use the same share store.
 pub fn persist_tr_channels_shares(state: &FrostTrShareState, store: &dyn ShareStorePort) -> Result<(), DomainError> {
     let mut roster = Vec::new();
     for (id, kp) in &state.key_packages {
@@ -146,7 +170,10 @@ pub fn persist_tr_channels_shares(state: &FrostTrShareState, store: &dyn ShareSt
     Ok(())
 }
 
-/// Load CHANNELS Taproot FROST material previously sealed by [`persist_tr_channels_shares`].
+/// Loads CHANNELS Taproot FROST packages written by [`persist_tr_channels_shares`].
+///
+/// Returns an error for missing/corrupt values, malformed roster data, invalid
+/// serialized packages, or an empty roster.
 pub fn load_tr_channels_shares(store: &dyn ShareStorePort) -> Result<FrostTrShareState, DomainError> {
     let roster_raw = store.get_share(TR_CHANNELS_ROSTER_SHARE_ID)?;
     let roster = String::from_utf8(roster_raw)
@@ -177,7 +204,13 @@ pub fn load_tr_channels_shares(store: &dyn ShareStorePort) -> Result<FrostTrShar
     Ok(FrostTrShareState { key_packages, pubkey_package, min_signers })
 }
 
-/// Multi-round Taproot FROST refresh DKG (preserves group verifying key → same `tb1p`).
+/// Runs a local multi-round Taproot FROST refresh for the existing participants.
+///
+/// The refreshed secret shares change while the verifying key and quorum remain
+/// the same, preserving the derived Taproot deposit address. This helper keeps
+/// the existing participant roster; distributed deployments must coordinate
+/// the equivalent refresh protocol across their peers. Invalid thresholds,
+/// missing round material, or any key/threshold drift returns an error.
 pub fn refresh_tr_shares_in_process(
     old_key_packages: &BTreeMap<Identifier, KeyPackage>,
     old_pubkey: &PublicKeyPackage,
@@ -198,12 +231,10 @@ pub fn refresh_tr_shares_in_process(
         return Err(DomainError::ThresholdError(format!("bad tr reshare params: max={max_signers} min={min_signers}")));
     }
 
-    let mut rng = OsRng;
-
     let mut round1_secrets = BTreeMap::new();
     let mut round1_packages = BTreeMap::new();
     for id in &identifiers {
-        let (secret, package) = refresh_dkg_part1(*id, max_signers, min_signers, &mut rng)
+        let (secret, package) = refresh_dkg_part1(*id, max_signers, min_signers, OsRng)
             .map_err(|e| DomainError::ThresholdError(format!("frost-tr refresh part1: {e}")))?;
         round1_secrets.insert(*id, secret);
         round1_packages.insert(*id, package);
@@ -264,49 +295,85 @@ pub fn refresh_tr_shares_in_process(
 }
 
 #[derive(Debug)]
+/// Signature metadata returned when a raw Bitcoin sighash is signed.
 pub struct BitcoinSighashSignature {
+    /// Caller-supplied anti-replay session identifier.
     pub session_id: String,
+    /// Day epoch authorized by the configured rotation policy.
     pub day_epoch: String,
+    /// Serialized BIP-340 signature encoded as lowercase hexadecimal.
     pub signature_hex: String,
+    /// Threshold recorded for the installed share set.
     pub participants: usize,
+    /// Identifier of the FROST signature scheme and result format.
     pub scheme: &'static str,
 }
 
 #[derive(Debug)]
+/// Signed PSBT and per-input Taproot signature details.
 pub struct SignedPsbtResult {
+    /// Caller-supplied anti-replay session identifier.
     pub session_id: String,
+    /// Day epoch authorized by the configured rotation policy.
     pub day_epoch: String,
+    /// Base64-encoded PSBT with matching inputs' `tap_key_sig` fields populated.
     pub signed_psbt: String,
+    /// Sighash and signature produced for each input signed by this operation.
     pub signatures: Vec<InputSignature>,
+    /// Number of distinct peer node identifiers reported by the signing quorum.
     pub participants: usize,
+    /// Distinct peer node identifiers reported by the signing quorum.
     pub participant_node_ids: Vec<String>,
+    /// Minimum signer threshold configured in the installed share set.
     pub threshold: usize,
+    /// Identifier of the FROST signature scheme and result format.
     pub scheme: &'static str,
 }
 
+/// Attributable quorum signature over a canonical financial proposal hash.
 pub struct FinancialQuorumProof {
+    /// Serialized BIP-340 signature encoded as lowercase hexadecimal.
     pub signature_hex: String,
+    /// Tweaked x-only group verifying key encoded as lowercase hexadecimal.
     pub verifying_key_hex: String,
+    /// Peer node identifiers that contributed to the signature.
     pub participant_node_ids: Vec<String>,
+    /// Minimum number of shares required by the installed group.
     pub required_threshold: usize,
 }
 
 #[derive(Debug, Clone)]
+/// Signature information associated with one PSBT input.
 pub struct InputSignature {
+    /// Zero-based input position in the unsigned transaction.
     pub input_index: usize,
+    /// Taproot key-spend sighash encoded as lowercase hexadecimal.
     pub sighash_hex: String,
+    /// Serialized BIP-340 signature encoded as lowercase hexadecimal.
     pub signature_hex: String,
 }
 
+/// Network-specific omnibus Taproot deposit address and key description.
 pub struct DepositInfo {
+    /// Bitcoin network name used to encode the address.
     pub network: String,
+    /// Untweaked internal x-only group public key in lowercase hexadecimal.
     pub xonly_pubkey_hex: String,
+    /// BIP-341 tweaked output x-only public key in lowercase hexadecimal.
     pub output_pubkey_hex: String,
+    /// Encoded P2TR address derived from the group key for `network`.
     pub address: String,
+    /// Key-only descriptor in `tr(output_key)` form.
     pub descriptor: String,
+    /// Identifier of the FROST signature scheme and result format.
     pub scheme: &'static str,
 }
 
+/// Coordinates share access, anti-replay, epoch policy, and Taproot signing.
+///
+/// Signing requires an installed share set and configured peer co-sign transport;
+/// PSBT signing additionally checks the supplied transaction against its policy
+/// and the requested Intent destination and amount.
 pub struct FrostTrBitcoinOrchestrator {
     shares: Arc<FrostTrShareSlot>,
     anti_nonce: Box<dyn AntiNoncePort>,
@@ -321,9 +388,11 @@ pub struct FrostTrBitcoinOrchestrator {
 }
 
 impl FrostTrBitcoinOrchestrator {
-    /// Produce an attributable FROST 2/3 proof for a canonical 32-byte
-    /// financial proposal hash. Production always uses one local share plus
-    /// authenticated peers; dealer-lab multi-share proofs are refused.
+    /// Produces an attributable signature for a canonical 32-byte proposal hash.
+    ///
+    /// Requires distributed peer co-sign transport and refuses local dealer
+    /// multi-share mode. The returned verifying key is Taproot tweaked and the
+    /// proof includes the contributing peer IDs and configured threshold.
     pub fn sign_financial_quorum_proof(&self, proposal_hash: &[u8; 32]) -> Result<FinancialQuorumProof, DomainError> {
         if self.allow_local_multisign {
             return Err(DomainError::ThresholdError(
@@ -359,6 +428,10 @@ impl FrostTrBitcoinOrchestrator {
         })
     }
 
+    /// Creates an orchestrator with lab-default PSBT policy and no peer transport.
+    ///
+    /// The `dealer_lab` feature controls the initial local-multisign flag, but
+    /// signing still requires an explicitly configured co-sign transport.
     pub fn new(
         shares: Arc<FrostTrShareSlot>,
         anti_nonce: Box<dyn AntiNoncePort>,
@@ -377,11 +450,16 @@ impl FrostTrBitcoinOrchestrator {
         }
     }
 
+    /// Replaces the default PSBT fee, locktime, and sequence policy.
     pub fn with_psbt_policy(mut self, policy: PsbtPolicy) -> Self {
         self.psbt_policy = policy;
         self
     }
 
+    /// Configures the local peer identity, signing mode, and peer co-sign transport.
+    ///
+    /// Production callers should set `allow_local_multisign` to `false`; raw
+    /// signing rejects that mode because local multi-share signing was removed.
     pub fn with_wire_cosign(
         mut self,
         local_node_id: impl Into<String>,
@@ -394,9 +472,12 @@ impl FrostTrBitcoinOrchestrator {
         self
     }
 
-    /// Omnibus deposit address (shared mesh key). Same `tb1p` for all USERS.
-    /// TODO(4.4): Add `deposit_address_for(user_id)` for per-user rotating addresses.
-    /// See docs/ops/DEPOSIT_ADDRESS_STRATEGY.md for trade-off analysis.
+    /// Derives the shared omnibus Taproot deposit address for this network.
+    ///
+    /// Returns the internal key, tweaked output key, address, and key-only
+    /// descriptor. All USERS sharing this group key receive the same address.
+    /// Fails when shares are absent or the verifying key cannot be represented
+    /// as an x-only secp256k1 key.
     pub fn deposit_info(&self) -> Result<DepositInfo, DomainError> {
         let snap = self.shares.snapshot()?;
         let internal = xonly_from_verifying_key(snap.pubkey_package.verifying_key())?;
@@ -415,7 +496,12 @@ impl FrostTrBitcoinOrchestrator {
         })
     }
 
-    /// Sign a raw 32-byte Bitcoin Taproot sighash (BIP-340). No message binding.
+    /// Signs a raw 32-byte Bitcoin Taproot sighash with the FROST group.
+    ///
+    /// Claims `session_id` before checking the current daily epoch. The caller
+    /// must supply an already-computed sighash; this method does not bind an
+    /// Intent or transaction. Reusing a session is rejected by the anti-nonce
+    /// port, and non-32-byte input is rejected.
     pub fn sign_sighash(&self, session_id: &str, sighash32: &[u8]) -> Result<BitcoinSighashSignature, DomainError> {
         if sighash32.len() != 32 {
             return Err(DomainError::ThresholdError("bitcoin sighash must be exactly 32 bytes".into()));
@@ -436,8 +522,12 @@ impl FrostTrBitcoinOrchestrator {
         })
     }
 
-    /// Intent-gated callers pass a funded PSBT; we bind outputs to Intent then sign
-    /// Taproot key-path inputs that match the mesh deposit key.
+    /// Binds a funded PSBT to an Intent and signs matching Taproot key-path inputs.
+    ///
+    /// Outputs must contain the requested destination and amount, with any change
+    /// constrained to the mesh deposit key. Transaction policy is checked before
+    /// signing. Only unsigned P2TR key-path inputs owned by this group are signed;
+    /// other inputs are left untouched. Fails when no eligible input matches.
     pub fn sign_psbt(
         &self,
         session_id: &str,
@@ -567,10 +657,11 @@ fn sha2_first_16(msg: &[u8]) -> [u8; 16] {
 
 /// Lab dealer keygen for Taproot FROST (even-Y internal key; tweak applied at sign/deposit).
 #[cfg(feature = "dealer_lab")]
+#[allow(dead_code)]
 pub fn generate_tr_dealer(max_signers: u16, min_signers: u16) -> Result<FrostTrShareState, DomainError> {
-    let mut rng = OsRng;
+    let rng = OsRng;
     let (shares, pubkey_package) =
-        frost::keys::generate_with_dealer(max_signers, min_signers, frost::keys::IdentifierList::Default, &mut rng)
+        frost::keys::generate_with_dealer(max_signers, min_signers, frost::keys::IdentifierList::Default, rng)
             .map_err(|e| DomainError::ThresholdError(format!("frost-tr dealer: {e}")))?;
 
     let pubkey_package = pubkey_package.into_even_y(None);
@@ -628,6 +719,7 @@ fn script_matches_output_key(script: &ScriptBuf, output_key: XOnlyPublicKey) -> 
 }
 
 impl DepositInfo {
+    /// Serializes this value using the deposit-info JSON field names.
     pub fn to_json(&self) -> String {
         format!(
             r#"{{"network":"{}","xonly_pubkey":"{}","output_pubkey":"{}","address":"{}","descriptor":"{}","scheme":"{}"}}"#,
@@ -637,6 +729,7 @@ impl DepositInfo {
 }
 
 impl BitcoinSighashSignature {
+    /// Serializes this value using the legacy Bitcoin sighash response fields.
     pub fn to_json(&self) -> String {
         format!(
             r#"{{"session_id":"{}","day_epoch":"{}","signature":"{}","participants":{},"scheme":"{}"}}"#,
@@ -646,6 +739,7 @@ impl BitcoinSighashSignature {
 }
 
 impl SignedPsbtResult {
+    /// Serializes the signed PSBT, per-input signatures, and participant metadata.
     pub fn to_json(&self) -> String {
         let sigs: Vec<String> = self
             .signatures

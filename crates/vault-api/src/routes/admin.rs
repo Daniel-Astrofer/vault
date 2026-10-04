@@ -261,7 +261,7 @@ pub async fn spawn_admin_tcp(
 /// Check whether the `dealer_lab` feature gate should reject this request.
 ///
 /// In production builds, dealer_lab operations are always rejected.
-#[allow(dead_code)]
+#[allow(dead_code, clippy::result_large_err)]
 pub fn check_dealer_lab_gate(request_id: &str) -> Result<(), (StatusCode, Json<AdminErrorEnvelopeV1>)> {
     #[cfg(all(feature = "production", feature = "dealer_lab"))]
     {
@@ -278,6 +278,7 @@ pub fn check_dealer_lab_gate(request_id: &str) -> Result<(), (StatusCode, Json<A
 /// Adversarial input validation for admin requests.
 ///
 /// Checks for path traversal, oversized payloads, and other malicious patterns.
+#[allow(clippy::result_large_err)]
 pub fn validate_admin_request_path(
     path: &str,
     request_id: &str,

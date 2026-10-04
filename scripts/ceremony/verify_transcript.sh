@@ -10,7 +10,7 @@ set -euo pipefail
 # Ceremony artifact layout expected:
 #   $VAULT_CEREMONY_DIR/
 #     roster.json          — {nodes, genesis_n, threshold, group_pubkey}
-#     audit/               — signed audit manifests (verify_mesh_audit_sig.sh)
+#     audit/               — signed audit manifests, public keys and allowlist
 #     identity/            — per-node ML-DSA-65 + Ed25519 pubkeys
 #     shares/              — encrypted share blobs (hybrid envelope)
 #     transcript.log       — DKG round logs
@@ -78,7 +78,8 @@ if [[ -d "$IDENTITY_DIR" ]]; then
   done
   check "[ $ID_COUNT -ge 3 ]" "  >=3 node identity directories found"
 else
-  echo "  [WARN] identity/ directory not found (ceremony may not have produced identity keys yet)"
+  echo "  [FAIL] identity/ directory not found"
+  fail=$((fail + 1))
 fi
 
 # ---- Share blobs (hybrid envelope) ----
@@ -100,11 +101,13 @@ if [[ -d "$SHARES_DIR" ]]; then
     if [[ "$ver" == "02000000" || "$ver" == "03000000" ]]; then
       echo "  [PASS] $(basename "$f"): hybrid envelope v$(echo "$ver" | head -c1)"
     else
-      echo "  [WARN] $(basename "$f"): unknown envelope version $ver"
+      echo "  [FAIL] $(basename "$f"): unknown envelope version $ver"
+      fail=$((fail + 1))
     fi
   done
 else
-  echo "  [WARN] shares/ directory not found"
+  echo "  [FAIL] shares/ directory not found"
+  fail=$((fail + 1))
 fi
 
 # ---- Audit signatures ----
@@ -112,22 +115,35 @@ echo
 echo "--- Audit signatures ---"
 AUDIT_DIR="$CEREMONY_DIR/audit"
 if [[ -d "$AUDIT_DIR" ]]; then
-  if [[ -f "$SCRIPT_DIR/verify_mesh_audit_sig.sh" ]]; then
-    for sig in "$AUDIT_DIR"/manifest-*.sig; do
-      [[ -f "$sig" ]] || continue
-      manifest="${sig%.sig}"
-      if bash "$SCRIPT_DIR/verify_mesh_audit_sig.sh" "$manifest" "$sig" 2>/dev/null; then
-        echo "  [PASS] $(basename "$manifest"): audit signature valid"
-      else
-        echo "  [FAIL] $(basename "$manifest"): audit signature invalid"
-        fail=$((fail + 1))
-      fi
-    done
-  else
-    echo "  [WARN] verify_mesh_audit_sig.sh not found; skipping audit verification"
+  VERIFY_AUDIT="$SCRIPT_DIR/../security/verify_audit_signature.sh"
+  ALLOWLIST="${VAULT_AUDIT_PUBKEYS_PATH:-$AUDIT_DIR/allowlist.txt}"
+  SIG_COUNT=0
+  for sig in "$AUDIT_DIR"/manifest-*.sig; do
+    [[ -f "$sig" ]] || continue
+    SIG_COUNT=$((SIG_COUNT + 1))
+    manifest="${sig%.sig}"
+    pub="${VAULT_AUDIT_PUBKEY_PATH:-${manifest}.pub}"
+    if [[ ! -x "$VERIFY_AUDIT" || ! -f "$manifest" || ! -f "$pub" || ! -f "$ALLOWLIST" ]]; then
+      echo "  [FAIL] $(basename "$manifest"): verifier, payload, public key or allowlist missing"
+      fail=$((fail + 1))
+      continue
+    fi
+    if bash "$VERIFY_AUDIT" verify \
+      --allowlist "$ALLOWLIST" --pub "$pub" \
+      --message "$manifest" --sig "$sig" >/dev/null 2>&1; then
+      echo "  [PASS] $(basename "$manifest"): audit signature valid"
+    else
+      echo "  [FAIL] $(basename "$manifest"): audit signature invalid"
+      fail=$((fail + 1))
+    fi
+  done
+  if [[ "$SIG_COUNT" -eq 0 ]]; then
+    echo "  [FAIL] no signed audit manifest found"
+    fail=$((fail + 1))
   fi
 else
-  echo "  [WARN] audit/ directory not found"
+  echo "  [FAIL] audit/ directory not found"
+  fail=$((fail + 1))
 fi
 
 # ---- Transcript log ----
@@ -140,7 +156,8 @@ if [[ -f "$TRANS" ]]; then
   check 'grep -qi "DKG.*complete\|keygen.*success\|group.*pubkey" "$TRANS" 2>/dev/null' \
     "DKG completion logged in transcript"
 else
-  echo "  [WARN] transcript.log not found"
+  echo "  [FAIL] transcript.log not found"
+  fail=$((fail + 1))
 fi
 
 echo

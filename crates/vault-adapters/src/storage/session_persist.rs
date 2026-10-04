@@ -13,7 +13,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::application::AntiNoncePort;
@@ -23,6 +23,11 @@ use crate::{build_mtls_rustls_client_config, PeerHttpSettings, TlsPeerVerifyPoli
 /// Soft HTTP prepare TTL (High #8) — expires unless promoted by claim_session.
 const PREPARE_TTL: Duration = Duration::from_secs(120);
 
+/// Durable local anti-replay ledger with expiring remote prepare reservations.
+///
+/// Claimed IDs are stored in an append-only file and synchronized before success
+/// is returned. Remote soft reservations are process-local and expire after
+/// the 120-second prepare TTL; they are not a substitute for a durable claim.
 pub struct PersistedAntiNonce {
     path: PathBuf,
     inner: Mutex<HashSet<String>>,
@@ -30,6 +35,10 @@ pub struct PersistedAntiNonce {
 }
 
 impl PersistedAntiNonce {
+    /// Opens or creates the ledger and reloads previously claimed session IDs.
+    ///
+    /// Parent directories are created when needed. Existing log corruption or
+    /// filesystem failures are returned as domain errors.
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, DomainError> {
         let path = path.into();
         if let Some(parent) = path.parent() {
@@ -58,7 +67,11 @@ impl PersistedAntiNonce {
         soft.retain(|_, exp| *exp > now);
     }
 
-    /// Durable check-and-insert. Returns `true` if `session_id` was already present.
+    /// Durably records an ID unless it was already claimed.
+    ///
+    /// Returns `true` when already present. A new ID is appended and `sync_all`
+    /// completes before this returns `false`; a successful durable prepare also
+    /// clears any soft reservation for the same ID.
     pub fn prepare(&self, session_id: &str) -> Result<bool, DomainError> {
         let mut g = self.inner.lock().expect("anti-nonce");
         if g.contains(session_id) {
@@ -71,7 +84,10 @@ impl PersistedAntiNonce {
         Ok(false)
     }
 
-    /// Soft TTL reservation for HTTP prepare (anti-DoS). Returns `true` if blocked.
+    /// Adds a process-local reservation for HTTP prepare, expiring after 120 seconds.
+    ///
+    /// Returns `true` when the ID is already durable or already reserved and
+    /// unexpired. This reservation is intentionally non-durable.
     pub fn prepare_soft(&self, session_id: &str) -> Result<bool, DomainError> {
         let g = self.inner.lock().expect("anti-nonce");
         if g.contains(session_id) {
@@ -119,15 +135,20 @@ impl AntiNoncePort for PersistedAntiNonce {
 /// Result of a peer durable prepare.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PrepareAck {
+    /// Whether the peer had already durably claimed or reserved the session ID.
     pub already_seen: bool,
 }
 
 /// Transport used by [`QuorumAntiNonce`] to collect peer prepares.
 pub trait AntiNonceQuorumTransport: Send + Sync {
+    /// Requests durable prepares from peers; returned entries represent successful responses.
     fn prepare_on_peers(&self, session_id: &str) -> Result<Vec<PrepareAck>, DomainError>;
 }
 
-/// HTTP peer prepare: POST `/v1/anti-nonce/prepare`.
+/// HTTP transport for peer durable prepares at `/v1/anti-nonce/prepare`.
+///
+/// Authentication is either the optional lab token header or the mTLS identity
+/// configured by [`with_mtls`](Self::with_mtls).
 pub struct HttpAntiNonceTransport {
     peer_prepare_urls: Vec<String>,
     auth_token: Option<String>,
@@ -137,6 +158,10 @@ pub struct HttpAntiNonceTransport {
 }
 
 impl HttpAntiNonceTransport {
+    /// Creates a clearnet-configured transport with the supplied timeout.
+    ///
+    /// Connect timeout is set to the same duration and retries are limited to
+    /// one attempt by default.
     pub fn new(peer_prepare_urls: Vec<String>, auth_token: Option<String>, timeout: Duration) -> Self {
         let mut peer_http = PeerHttpSettings::clearnet_defaults();
         peer_http.timeout = timeout;
@@ -145,6 +170,7 @@ impl HttpAntiNonceTransport {
         Self::with_peer_http(peer_prepare_urls, auth_token, peer_http)
     }
 
+    /// Creates a transport using explicit peer HTTP settings and optional token auth.
     pub fn with_peer_http(
         peer_prepare_urls: Vec<String>,
         auth_token: Option<String>,
@@ -153,6 +179,10 @@ impl HttpAntiNonceTransport {
         Self { peer_prepare_urls, auth_token, peer_http, tls: None }
     }
 
+    /// Creates an mTLS transport using the provided client identity and peer policy.
+    ///
+    /// Token authentication is disabled for this transport; TLS configuration
+    /// or certificate validation errors are returned to the caller.
     pub fn with_mtls(
         peer_prepare_urls: Vec<String>,
         peer_http: PeerHttpSettings,
@@ -176,9 +206,8 @@ impl HttpAntiNonceTransport {
 
 impl AntiNonceQuorumTransport for HttpAntiNonceTransport {
     fn prepare_on_peers(&self, session_id: &str) -> Result<Vec<PrepareAck>, DomainError> {
-        let mut out = Vec::with_capacity(self.peer_prepare_urls.len());
         if self.peer_prepare_urls.is_empty() {
-            return Ok(out);
+            return Ok(Vec::new());
         }
         let client = self.build_blocking_client()?;
         let body = serde_json::json!({
@@ -187,40 +216,78 @@ impl AntiNonceQuorumTransport for HttpAntiNonceTransport {
             "durable": true
         })
         .to_string();
-        for url in &self.peer_prepare_urls {
-            let attempts = self.peer_http.max_retries.max(1);
-            let mut ack = None;
-            for attempt in 0..attempts {
-                let mut req = client.post(url).header("Content-Type", "application/json").body(body.clone());
-                if let Some(token) = self.auth_token.as_deref() {
-                    req = req.header("X-Vault-Token", token);
+        let peer_count = self.peer_prepare_urls.len();
+        let required = quorum_two_thirds(peer_count + 1).saturating_sub(1);
+        let (sender, receiver) = mpsc::channel();
+        for url in self.peer_prepare_urls.iter().cloned() {
+            let sender = sender.clone();
+            let client = client.clone();
+            let body = body.clone();
+            let token = self.auth_token.clone();
+            let settings = self.peer_http.clone();
+            std::thread::spawn(move || {
+                let result = post_anti_nonce_prepare(&client, &settings, &url, token.as_deref(), &body);
+                let _ = sender.send((url, result));
+            });
+        }
+        drop(sender);
+
+        let deadline = Instant::now() + self.peer_http.timeout;
+        let mut received = 0usize;
+        let mut out = Vec::with_capacity(required);
+        while received < peer_count && out.len() < required {
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                break;
+            };
+            match receiver.recv_timeout(remaining) {
+                Ok((_, Ok(Some(ack)))) => {
+                    received += 1;
+                    if ack.already_seen {
+                        return Ok(vec![ack]);
+                    }
+                    out.push(ack);
                 }
-                match req.send() {
-                    Ok(resp) if resp.status().is_success() => {
-                        let text = resp.text().unwrap_or_default();
-                        ack = Some(PrepareAck { already_seen: parse_already_seen(&text)? });
-                        break;
-                    }
-                    Ok(resp) => {
-                        if !PeerHttpSettings::should_retry_status(resp.status()) || attempt + 1 >= attempts {
-                            break;
-                        }
-                        std::thread::sleep(self.peer_http.backoff_delay(attempt));
-                    }
-                    Err(_) => {
-                        if attempt + 1 >= attempts {
-                            break; // unreachable peer — does not count toward quorum
-                        }
-                        std::thread::sleep(self.peer_http.backoff_delay(attempt));
-                    }
+                Ok((_, Ok(None))) => received += 1,
+                Ok((url, Err(error))) => {
+                    received += 1;
+                    eprintln!("anti-nonce peer {url} unavailable: {error}");
                 }
-            }
-            if let Some(a) = ack {
-                out.push(a);
+                Err(_) => break,
             }
         }
         Ok(out)
     }
+}
+
+fn post_anti_nonce_prepare(
+    client: &reqwest::blocking::Client,
+    settings: &PeerHttpSettings,
+    url: &str,
+    auth_token: Option<&str>,
+    body: &str,
+) -> Result<Option<PrepareAck>, DomainError> {
+    let attempts = settings.max_retries.max(1);
+    for attempt in 0..attempts {
+        let mut req = client.post(url).header("Content-Type", "application/json").body(body.to_owned());
+        if let Some(token) = auth_token {
+            req = req.header("X-Vault-Token", token);
+        }
+        match req.send() {
+            Ok(resp) if resp.status().is_success() => {
+                let text = resp.text().unwrap_or_default();
+                return Ok(Some(PrepareAck { already_seen: parse_already_seen(&text)? }));
+            }
+            Ok(resp) => {
+                if !PeerHttpSettings::should_retry_status(resp.status()) || attempt + 1 >= attempts {
+                    return Ok(None);
+                }
+            }
+            Err(_) if attempt + 1 >= attempts => return Ok(None),
+            Err(_) => {}
+        }
+        std::thread::sleep(settings.backoff_delay(attempt));
+    }
+    Ok(None)
 }
 
 fn parse_already_seen(body: &str) -> Result<bool, DomainError> {
@@ -239,12 +306,14 @@ pub struct MemoryAntiNonceTransport {
 }
 
 impl MemoryAntiNonceTransport {
+    /// Creates a transport that directly prepares each supplied in-memory peer.
     pub fn new(peers: Vec<Arc<PersistedAntiNonce>>) -> Self {
         Self { peers }
     }
 }
 
 impl AntiNonceQuorumTransport for MemoryAntiNonceTransport {
+    /// Durably prepares every configured peer and returns their seen status.
     fn prepare_on_peers(&self, session_id: &str) -> Result<Vec<PrepareAck>, DomainError> {
         let mut out = Vec::with_capacity(self.peers.len());
         for peer in &self.peers {
@@ -266,6 +335,10 @@ pub struct QuorumAntiNonce {
 }
 
 impl QuorumAntiNonce {
+    /// Opens a local durable ledger and configures the peer quorum transport.
+    ///
+    /// `peer_count` is the configured cluster peer count, used to calculate the
+    /// two-thirds quorum; it should match the transport's actual peer set.
     pub fn open(
         local_path: impl Into<PathBuf>,
         transport: Arc<dyn AntiNonceQuorumTransport>,
@@ -274,6 +347,7 @@ impl QuorumAntiNonce {
         Self::from_local(Arc::new(PersistedAntiNonce::open(local_path)?), transport, peer_count)
     }
 
+    /// Builds a quorum ledger around an already opened local durable store.
     pub fn from_local(
         local: Arc<PersistedAntiNonce>,
         transport: Arc<dyn AntiNonceQuorumTransport>,
@@ -284,20 +358,27 @@ impl QuorumAntiNonce {
         Ok(Self { local, transport, peer_count, quorum_t })
     }
 
+    /// Returns a shared handle to the local durable ledger.
     pub fn local_store(&self) -> Arc<PersistedAntiNonce> {
         self.local.clone()
     }
 
+    /// Returns the number of successful durable prepares required, including self.
     pub fn quorum_t(&self) -> usize {
         self.quorum_t
     }
 
+    /// Returns the configured number of remote peers, excluding self.
     pub fn peer_count(&self) -> usize {
         self.peer_count
     }
 }
 
 impl AntiNoncePort for QuorumAntiNonce {
+    /// Burns the local ID first, rejects IDs seen by any peer, then requires quorum.
+    ///
+    /// A quorum failure leaves the local ID consumed; this fail-closed behavior
+    /// prevents retries from reusing a session that may have reached peers.
     fn claim_session(&self, session_id: &str) -> Result<(), DomainError> {
         // 1) Local durable burn first — crash mid-flight never reuses this id here.
         if self.local.prepare(session_id)? {
@@ -334,18 +415,22 @@ impl AntiNoncePort for QuorumAntiNonce {
 pub struct SharedAntiNonce(pub Arc<dyn AntiNoncePort>);
 
 impl AntiNoncePort for SharedAntiNonce {
+    /// Forwards the durable session claim to the shared ledger.
     fn claim_session(&self, session_id: &str) -> Result<(), DomainError> {
         self.0.claim_session(session_id)
     }
 
+    /// Forwards the consumed/reserved status query to the shared ledger.
     fn is_consumed(&self, session_id: &str) -> Result<bool, DomainError> {
         self.0.is_consumed(session_id)
     }
 
+    /// Forwards a soft remote prepare to the shared ledger.
     fn prepare_remote(&self, session_id: &str) -> Result<bool, DomainError> {
         self.0.prepare_remote(session_id)
     }
 
+    /// Forwards a durable remote prepare to the shared ledger.
     fn prepare_remote_durable(&self, session_id: &str) -> Result<bool, DomainError> {
         self.0.prepare_remote_durable(session_id)
     }
@@ -457,7 +542,7 @@ mod tests {
     fn prepare_remote_reports_already_seen() {
         let tmp = TempDir::new("prep");
         let p = PersistedAntiNonce::open(tmp.0.join("p.log")).unwrap();
-        assert_eq!(p.prepare_remote("x").unwrap(), false);
-        assert_eq!(p.prepare_remote("x").unwrap(), true);
+        assert!(!p.prepare_remote("x").unwrap());
+        assert!(p.prepare_remote("x").unwrap());
     }
 }
