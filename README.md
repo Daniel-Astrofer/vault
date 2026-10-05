@@ -1,25 +1,18 @@
+<!--
+status: active
+audience: internal/restricted
+owner: vault
+source_of_truth: vault Cargo.toml and source tree
+last_reviewed: 2026-09-03
+-->
+
 # Kerosene Vault
 
-Rust custody and threshold-signing service for Kerosene.
+Custody and threshold-signing trust domain. Start at the
+[documentation](../../kerosene-global-docs/services/vault/docs/quickstart/README.md) and [verification quickstart](../../kerosene-global-docs/services/vault/docs/quickstart/QUICKSTART.md).
 
-This repository owns threshold signing, FROST/DKG/reshare, nonce policy,
-attestation adapters and Vault release validation. Its CI must never receive
-production shares, TPM private material, LND macaroons or deployment authority.
+Never place shares, key material, credentials or ceremony output in Git.
 
-It does not own authentication, financial ledger rules, service discovery or
-deployment orchestration. It consumes versioned contracts and obtains peer
-membership from Kerosene Node.
+## Documentação global
 
-Documentation:
-
-- [English](docs/en/README.md)
-- [Português](docs/pt-BR/README.md)
-- [Kerosene Node integration](docs/KEROSENE_NODE_INTEGRATION.md)
-- [Repository boundary](docs/REPOSITORY_BOUNDARY.md)
-- [Security documentation](docs/security/QUANTUM_THREAT_MODEL.md)
-- [Repository layout](docs/REPOSITORY_LAYOUT.md)
-
-Start with [English quickstart](docs/en/QUICKSTART.md) or
-[início rápido em português](docs/pt-BR/QUICKSTART.md). Production readiness is
-tracked in the corresponding `STATUS.md`; historical plans are not operational
-runbooks.
+Arquitetura transversal, regras de negócio compartilhadas e infraestrutura/operação global estão no repositório externo [kerosene-global-docs](../../kerosene-global-docs/README.md). A documentação inline de implementação permanece junto ao código neste repositório.

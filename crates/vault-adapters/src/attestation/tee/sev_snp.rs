@@ -38,6 +38,8 @@
 //!
 //! See [`validate_tcb_version`] for the check.
 
+#![cfg_attr(not(feature = "tee_hw"), allow(dead_code))]
+
 use crate::domain::{DomainError, Measurement};
 
 #[cfg(feature = "tee_hw")]

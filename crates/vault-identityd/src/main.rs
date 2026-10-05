@@ -128,8 +128,8 @@ async fn main() {
             // Query the running daemon via HTTP GET on the Unix socket
             let client = reqwest::Client::builder().build().expect("failed to build HTTP client");
 
-            let url = format!("http://localhost/v1/health");
-            match client.get(&url).send().await {
+            let url = "http://localhost/v1/health";
+            match client.get(url).send().await {
                 Ok(resp) => {
                     let body: serde_json::Value = resp.json().await.unwrap_or_default();
                     println!("Daemon status: {body}");

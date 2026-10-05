@@ -20,10 +20,12 @@ pub struct MutualTlsAuthAdapter {
 }
 
 impl MutualTlsAuthAdapter {
+    /// Creates mTLS authentication with manual reshare triggers disabled.
     pub fn new() -> Self {
         Self { reshare_trigger_allowed: false, identity_ed25519_pub: None }
     }
 
+    /// Creates mTLS authentication with an explicit manual-reshare permission.
     pub fn with_reshare_trigger(allowed: bool) -> Self {
         Self { reshare_trigger_allowed: allowed, identity_ed25519_pub: None }
     }

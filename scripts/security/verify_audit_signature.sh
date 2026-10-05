@@ -2,16 +2,17 @@
 # Sign / verify mesh audit payloads with F8 audit keys (≠ release ≠ settlement).
 #
 # Sign:
-#   ./scripts/verify_mesh_audit_sig.sh sign \
+#   ./scripts/security/verify_audit_signature.sh sign \
 #     --key ceremony-certs/audit/operators/audit-ops-1.key \
 #     --message event.json --sig event.sig
 #
 # Verify (allowlist required):
-#   ./scripts/verify_mesh_audit_sig.sh verify \
+#   ./scripts/security/verify_audit_signature.sh verify \
 #     --allowlist ceremony-certs/audit/allowlist.txt \
 #     --pub ceremony-certs/audit/operators/audit-ops-1.pub \
 #     --message event.json --sig event.sig
 set -euo pipefail
+umask 077
 
 usage() {
   sed -n '2,16p' "$0" | sed 's/^# //;s/^#//'

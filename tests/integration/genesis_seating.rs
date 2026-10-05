@@ -4,15 +4,41 @@ use kerosene_vault::bootstrap::{AuthMode, CeremonyMode, DkgMode, ShareStoreMode,
 use kerosene_vault::domain::{AttestationMode, BitcoinNetwork, NodeId, ResharePolicy, VaultNodeTier};
 use std::collections::BTreeMap;
 use std::fs;
+use std::path::PathBuf;
+use std::process::Command;
+use std::sync::OnceLock;
 
-fn base_lab() -> VaultConfig {
+fn lab_mtls_certs() -> &'static PathBuf {
+    static CERTS: OnceLock<PathBuf> = OnceLock::new();
+
+    CERTS.get_or_init(|| {
+        let unique =
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        let certs = std::env::temp_dir().join(format!("kerosene-vault-genesis-mtls-{}-{unique}", std::process::id()));
+        let output = Command::new("bash")
+            .env("VAULT_LAB_MTLS_OUT", &certs)
+            .env("VAULT_MTLS_NODE_IDS", "vault-home,vault-1,vault-zzz")
+            .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scripts/lab/gen_mtls_certs.sh"))
+            .output()
+            .expect("run lab mTLS certificate generator");
+        assert!(
+            output.status.success(),
+            "lab mTLS certificate generation failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        certs
+    })
+}
+
+fn base_lab(node_id: &str) -> VaultConfig {
     // The runtime persists a share-store to `data_dir`; ensure it exists to avoid
     // filesystem rename failures on fresh test runs.
     let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
     let data_dir = std::env::temp_dir().join(format!("kerosene-vault-test-data-{}-{}", std::process::id(), unique));
     let _ = fs::create_dir_all(&data_dir);
+    let node_certs = lab_mtls_certs().join("nodes").join(node_id);
     VaultConfig {
-        node_id: NodeId::new("vault-home").unwrap(),
+        node_id: NodeId::new(node_id).unwrap(),
         node_tier: VaultNodeTier::Domestic,
         tee_available: false,
         attestation_mode: AttestationMode::Sim,
@@ -42,17 +68,17 @@ fn base_lab() -> VaultConfig {
         miner_payout_frequency: kerosene_vault::domain::MinerPayoutCadence::Daily,
         seating_policy_timeout_hours: 24,
         bitcoin_network: BitcoinNetwork::Testnet3,
-        auth_mode: AuthMode::StaticToken,
-        vault_token: Some("t".into()),
+        auth_mode: AuthMode::MutualTls,
+        vault_token: None,
         users_destination_allowlist: vec![],
         miners_destination_allowlist: vec![],
         allow_manual_reshare: false,
         lab_allow_raw_sighash: false,
-        tls_cert_path: None,
-        tls_key_path: None,
-        tls_client_ca_path: None,
-        tls_client_cert_path: None,
-        tls_client_key_path: None,
+        tls_cert_path: Some(node_certs.join("server.crt").display().to_string()),
+        tls_key_path: Some(node_certs.join("server.key").display().to_string()),
+        tls_client_ca_path: Some(lab_mtls_certs().join("ca.crt").display().to_string()),
+        tls_client_cert_path: Some(node_certs.join("client.crt").display().to_string()),
+        tls_client_key_path: Some(node_certs.join("client.key").display().to_string()),
         tls_verify_policy: kerosene_vault::adapters::TlsPeerVerifyPolicy::Hostname,
         audit_key_allowlist: kerosene_vault::adapters::MeshAuditKeyAllowlist::empty(),
         share_store_mode: ShareStoreMode::AeadDisk,
@@ -79,7 +105,7 @@ fn base_lab() -> VaultConfig {
 
 #[test]
 fn runtime_seats_sev_before_domestic_for_genesis_roster() {
-    let rt = VaultRuntime::build(base_lab()).expect("build");
+    let rt = VaultRuntime::build(base_lab("vault-home")).expect("build");
     let ids: Vec<_> = rt.genesis_roster.iter().map(|n| n.as_str()).collect();
     assert_eq!(ids, vec!["vault-epyc", "vault-home"]);
     let health = rt.get_health.execute().unwrap();
@@ -90,8 +116,7 @@ fn runtime_seats_sev_before_domestic_for_genesis_roster() {
 
 #[test]
 fn all_domestic_genesis_seats_normally() {
-    let mut cfg = base_lab();
-    cfg.node_id = NodeId::new("vault-1").unwrap();
+    let mut cfg = base_lab("vault-1");
     cfg.seed_peers = vec![("vault-2".into(), "127.0.0.1:7702".into()), ("vault-3".into(), "127.0.0.1:7703".into())];
     cfg.peer_tiers.clear();
     cfg.genesis_n = Some(3);
@@ -103,9 +128,8 @@ fn all_domestic_genesis_seats_normally() {
 
 #[test]
 fn unseated_local_node_fails_closed() {
-    let mut cfg = base_lab();
+    let mut cfg = base_lab("vault-zzz");
     // Local is lowest priority domestic; SEV + another domestic fill n=2.
-    cfg.node_id = NodeId::new("vault-zzz").unwrap();
     cfg.seed_peers =
         vec![("vault-epyc".into(), "127.0.0.1:7702".into()), ("vault-aaa".into(), "127.0.0.1:7703".into())];
     cfg.peer_tiers = BTreeMap::from([("vault-epyc".into(), VaultNodeTier::Sev)]);

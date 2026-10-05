@@ -44,12 +44,15 @@ mtls_write_java_materials() {
     -out "${p12_out}" \
     -name kfe-client \
     -passout "pass:${p12_pass}"
-  openssl pkcs12 -export \
-    -nokeys \
-    -in "${out_dir}/ca.crt" \
-    -out "${trust_out}" \
-    -name vault-mesh-ca \
-    -passout "pass:${p12_pass}"
+  # OpenSSL can emit a CA-only PKCS#12 that Java's SUN provider loads with
+  # zero entries. Create a real Java trustedCertEntry instead.
+  rm -f "${trust_out}"
+  keytool -importcert -noprompt \
+    -alias vault-mesh-ca \
+    -file "${out_dir}/ca.crt" \
+    -keystore "${trust_out}" \
+    -storetype PKCS12 \
+    -storepass "${p12_pass}"
 }
 
 # Sync SPIFFE-like tree. Args: out_dir, spiffe_kfe, then vault_id=spiffe_uri pairs.
@@ -98,7 +101,7 @@ mtls_sync_spiffe_tree() {
 SPIFFE-like SVID mirror (SPIRE agent optional — drop-in compatible paths).
   trust domain bundle: trust-bundle.pem
   kfe:   ${spiffe_kfe}${readme_vaults}
-See docs/MTLS_SPIFFE_LAYOUT.md
+See docs/operations/MTLS_SPIFFE_LAYOUT.md
 EOF
 }
 

@@ -35,13 +35,13 @@ pub use frost::{
 };
 pub use frost::{
     session_transcript, session_transcript_tr, DistributedDkgAdapter, DistributedWireDkgPort, DkgStartRequest,
-    FrostDistributedBundle, Round1WireMessage, Round2WireMessage, Round3WireRequest, TrWireDkgHub, WireDkgHub,
-    WireDkgPeerAuth, WireDkgStatus,
+    FrostDistributedBundle, Round1WireMessage, Round2WireMessage, Round3WireRequest, TrDkgKeyset, TrWireDkgHub,
+    WireDkgHub, WireDkgPeerAuth, WireDkgStatus,
 };
 pub use frost::{
     sign_raw_wire, sign_raw_wire_attributed, tr_state_local_only, AttributedWireSignature, HttpTrCosignTransport,
-    NoopTrCosignTransport, TrCommitRequest, TrCommitResponse, TrCosignPeerState, TrCosignTransport, TrSignShareRequest,
-    TrSignShareResponse,
+    NoopTrCosignTransport, TrCommitRequest, TrCommitResponse, TrCosignKeyset, TrCosignPeerState, TrCosignTransport,
+    TrSignShareRequest, TrSignShareResponse,
 };
 pub use frost::{
     ReshareRound1WireMessage, ReshareRound2WireMessage, ReshareStartRequest, WireReshareHub, WireResharePeerAuth,

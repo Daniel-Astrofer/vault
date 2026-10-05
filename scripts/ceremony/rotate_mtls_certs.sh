@@ -2,12 +2,13 @@
 # Rotate short-lived ceremony leaves (reuses ceremony CA). Unique SPIFFE preserved.
 #
 # Usage:
-#   ./scripts/gen_ceremony_mtls_certs.sh          # once (creates CA + leaves)
-#   VAULT_CEREMONY_MTLS_TTL_HOURS=24 ./scripts/rotate_ceremony_mtls_certs.sh
+#   ./scripts/ceremony/gen_mtls_certs.sh          # once (creates CA + leaves)
+#   VAULT_CEREMONY_MTLS_TTL_HOURS=24 ./scripts/ceremony/rotate_mtls_certs.sh
 #
 # Optional reload hook:
-#   VAULT_MTLS_ROTATE_HOOK=/path/to/hook.sh ./scripts/rotate_ceremony_mtls_certs.sh
+#   VAULT_MTLS_ROTATE_HOOK=/path/to/hook.sh ./scripts/ceremony/rotate_mtls_certs.sh
 set -euo pipefail
+umask 077
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -25,7 +26,7 @@ ORG="Kerosene Ceremony"
 NODE_IDS_CSV="$(mtls_default_node_ids)"
 
 if [[ ! -f "$OUT_DIR/ca.crt" || ! -f "$OUT_DIR/ca.key" ]]; then
-  echo "error: ceremony CA missing under $OUT_DIR — run gen_ceremony_mtls_certs.sh first" >&2
+  echo "error: ceremony CA missing under $OUT_DIR — run scripts/ceremony/gen_mtls_certs.sh first" >&2
   exit 1
 fi
 
@@ -51,7 +52,7 @@ for node_id in "${NODE_IDS[@]}"; do
   spiffe_id="spiffe://${TRUST_DOMAIN}/vault/${node_id}"
   mkdir -p "nodes/${node_id}"
   EXTRA_SAN="DNS:localhost,DNS:${node_id},DNS:vault-1,DNS:vault-2,DNS:vault-3,IP:127.0.0.1"
-  EXTRA_SAN="$(mtls_onion_extra_san "$EXTRA_SAN" "${VAULT_LAB_MTLS_ONION_SANS:-}")"
+  EXTRA_SAN="$(mtls_onion_extra_san "$EXTRA_SAN" "${VAULT_CEREMONY_MTLS_ONION_SANS:-${VAULT_LAB_MTLS_ONION_SANS:-}}")"
   (
     cd "nodes/${node_id}"
     cp -f ../../ca.crt ../../ca.key .

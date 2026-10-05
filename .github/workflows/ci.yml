@@ -7,7 +7,6 @@ on:
 
 permissions:
   contents: read
-  pull-requests: read
 
 jobs:
   compatibility:
@@ -22,4 +21,8 @@ jobs:
       enforce-format: true
 
   security:
+    permissions:
+      contents: read
+      pull-requests: read # Required by dependency review on pull requests.
+      security-events: write # Required to upload SARIF security findings.
     uses: Daniel-Astrofer/.github/.github/workflows/security-scan.yml@2552ff2125c2d72accebe93804b8e139a52ded13

@@ -6,9 +6,10 @@
 #   audit-ca.pub / operators/*.key + *.pub + allowlist.txt
 #
 # Usage:
-#   ./scripts/gen_mesh_audit_keys.sh
-#   VAULT_AUDIT_OPERATORS=ops-1,ops-2,monitor ./scripts/gen_mesh_audit_keys.sh
+#   ./scripts/ceremony/gen_audit_keys.sh
+#   VAULT_AUDIT_OPERATORS=ops-1,ops-2,monitor ./scripts/ceremony/gen_audit_keys.sh
 set -euo pipefail
+umask 077
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -26,7 +27,7 @@ cat > PURPOSE.txt <<EOF
 purpose=${PURPOSE}
 forbidden_reuse=release_cosign,frost_settlement,mtls_svid
 f8_requirement=audit keys must be disjoint from release allowlist and settlement shares
-docs=../docs/AUDIT_KEYS.md
+docs=vault/docs/security/AUDIT_KEYS.md
 generated_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 EOF
 
@@ -72,4 +73,4 @@ ENV_HINT="$OUT_DIR/env.hint"
 
 echo "[audit] wrote allowlist → $ALLOWLIST"
 echo "[audit] source $ENV_HINT before ceremony checklist / vault boot"
-echo "[audit] verify: ./scripts/verify_mesh_audit_sig.sh --help"
+echo "[audit] verify: ./scripts/security/verify_audit_signature.sh --help"

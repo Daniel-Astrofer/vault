@@ -10,15 +10,20 @@ use crate::{quorum_two_thirds, DomainError, NodeId};
 pub struct ContentHash(String);
 
 impl ContentHash {
+    /// Hash arbitrary content bytes into the canonical hexadecimal content identifier.
     pub fn from_bytes(bytes: &[u8]) -> Self {
         Self(Measurement::from_bytes(bytes).as_hex().to_string())
     }
 
+    /// Parse a hexadecimal measurement and normalize it to canonical lowercase form.
+    ///
+    /// Returns the domain measurement error if the input is malformed.
     pub fn parse(raw: impl Into<String>) -> Result<Self, DomainError> {
         let m = Measurement::from_hex(raw.into())?;
         Ok(Self(m.as_hex().to_string()))
     }
 
+    /// Borrow the canonical hexadecimal representation used in persistence and comparisons.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -31,15 +36,21 @@ pub fn lab_rebuild_binary_hash(source: &[u8]) -> ContentHash {
     ContentHash::from_bytes(&material)
 }
 
+/// Lifecycle state of a proposed software release.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReleasePhase {
+    /// Candidate has been proposed and awaits required predicates/cosigns.
     Proposed,
+    /// At least one vault has recorded a cosign.
     Cosigning,
+    /// Candidate passed activation checks and is admitted by the allowlist.
     Allowlisted,
+    /// Candidate was explicitly rejected and can no longer be changed.
     Rejected,
 }
 
 impl ReleasePhase {
+    /// Return the stable lowercase phase name used in serialized candidate data.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Proposed => "proposed",
@@ -53,7 +64,9 @@ impl ReleasePhase {
 /// Policy knobs for NORMAL path (lab-scaled timelock).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReleasePolicy {
+    /// Number of council members in the policy's voting set.
     pub council_n: usize,
+    /// Minimum number of independent vault rebuild attestations required.
     pub min_rebuilds: usize,
     /// Vault cosign quorum: majority `⌈n/2⌉+` of active set size.
     pub vault_n: usize,
@@ -64,6 +77,7 @@ pub struct ReleasePolicy {
 }
 
 impl ReleasePolicy {
+    /// Build the lab policy with a three-member council, three rebuilds, and no effective wait.
     pub fn lab_default(vault_n: usize) -> Self {
         Self {
             council_n: 3,
@@ -74,35 +88,53 @@ impl ReleasePolicy {
         }
     }
 
+    /// Apply the lab scale to the configured base delay using saturating multiplication.
     pub fn effective_timelock_secs(&self) -> u64 {
         self.timelock_secs.saturating_mul(self.lab_timelock_scale)
     }
 
+    /// Calculate the two-thirds council threshold for the configured council size.
     pub fn council_quorum(&self) -> usize {
         quorum_two_thirds(self.council_n)
     }
 
+    /// Calculate the strict-majority vault cosign threshold for the active vault set.
     pub fn vault_cosign_quorum(&self) -> usize {
         // ⌈n/2⌉ + 0 for odd majority-ish: plan says ⌈n/2⌉+ → (n/2)+1
         (self.vault_n / 2) + 1
     }
 }
 
+/// Release proposal and its council, rebuild, cosign, and timing evidence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReleaseCandidate {
+    /// Stable identifier of this proposed release.
     pub id: String,
+    /// Content hash of the source artifact (`Hs`).
     pub hs: ContentHash,
+    /// Content hash of the expected rebuilt binary (`Hb`).
     pub hb: ContentHash,
+    /// Constitution hash under which the candidate was proposed.
     pub constitution_hash: String,
+    /// Unique council signer identifiers recorded for the proposal.
     pub council_sigs: BTreeSet<String>,
+    /// Rebuild attestations keyed by vault identifier; values are the rebuilt binary hashes.
     pub rebuilds: BTreeMap<String, ContentHash>,
+    /// Unique vault identifiers that have cosigned this release.
     pub cosigns: BTreeSet<String>,
+    /// Unix timestamp when the candidate was proposed.
     pub created_at_secs: u64,
+    /// Current lifecycle phase controlling whether the candidate may change.
     pub phase: ReleasePhase,
+    /// Optional explanation attached to an explicit rejection.
     pub reject_reason: Option<String>,
 }
 
 impl ReleaseCandidate {
+    /// Create a proposed release candidate with nonempty id and at least one council signer.
+    ///
+    /// This constructor records the supplied signatures but quorum sufficiency is
+    /// checked later by [`Self::predicates_ok`].
     pub fn new(
         id: String,
         hs: ContentHash,
@@ -131,6 +163,10 @@ impl ReleaseCandidate {
         })
     }
 
+    /// Record a vault's successful rebuild attestation after matching the expected binary hash.
+    ///
+    /// Rejected and allowlisted candidates are closed. Repeating a vault identifier
+    /// replaces its prior map entry and does not increase the distinct rebuild count.
     pub fn record_rebuild(&mut self, vault_id: &NodeId, rebuilt_hb: ContentHash) -> Result<(), DomainError> {
         if matches!(self.phase, ReleasePhase::Allowlisted | ReleasePhase::Rejected) {
             return Err(DomainError::ReleaseClosed(self.id.clone()));
@@ -145,6 +181,10 @@ impl ReleaseCandidate {
         Ok(())
     }
 
+    /// Check constitution, council quorum, rebuild count, and elapsed timelock predicates.
+    ///
+    /// `now_secs` is compared with the proposal timestamp using saturating subtraction.
+    /// Returns a specific domain error for the first failed predicate.
     pub fn predicates_ok(
         &self,
         policy: &ReleasePolicy,
@@ -168,6 +208,10 @@ impl ReleaseCandidate {
         Ok(())
     }
 
+    /// Add a vault cosign and move the candidate into the cosigning phase.
+    ///
+    /// Closed candidates reject updates. Repeated cosigns by the same vault are
+    /// idempotent because signers are stored in a set.
     pub fn add_cosign(&mut self, vault_id: &NodeId) -> Result<(), DomainError> {
         if matches!(self.phase, ReleasePhase::Allowlisted | ReleasePhase::Rejected) {
             return Err(DomainError::ReleaseClosed(self.id.clone()));
@@ -177,6 +221,11 @@ impl ReleaseCandidate {
         Ok(())
     }
 
+    /// Serialize candidate fields to the crate's JSON wire representation.
+    ///
+    /// Set-backed signer collections are emitted in sorted order. String values
+    /// are interpolated directly, so callers must not treat this helper as a
+    /// general-purpose JSON escaping boundary for untrusted strings.
     pub fn to_json(&self) -> String {
         let council: Vec<_> = self.council_sigs.iter().cloned().collect();
         let rebuilds: Vec<_> =
@@ -201,12 +250,18 @@ impl ReleaseCandidate {
     }
 }
 
+/// Activated release record used to admit matching binary measurements.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AllowlistEntry {
+    /// Release candidate identifier admitted by this entry.
     pub release_id: String,
+    /// Source content hash associated with the admitted release.
     pub hs: ContentHash,
+    /// Expected binary measurement admitted for execution.
     pub hb: ContentHash,
+    /// Unix timestamp when the release was activated.
     pub activated_at_secs: u64,
+    /// Constitution hash that governed activation.
     pub constitution_hash: String,
 }
 
@@ -216,6 +271,9 @@ impl AllowlistEntry {
         self.hb.as_str() == measurement.as_hex()
     }
 
+    /// Serialize the entry to the crate's JSON wire representation.
+    ///
+    /// String values are interpolated directly and are not escaped by this helper.
     pub fn to_json(&self) -> String {
         format!(
             r#"{{"release_id":"{}","hs":"{}","hb":"{}","activated_at_secs":{},"constitution_hash":"{}"}}"#,

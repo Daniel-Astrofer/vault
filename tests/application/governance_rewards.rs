@@ -3,18 +3,22 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+#[cfg(feature = "dealer_lab")]
 use kerosene_vault::adapters::DistributedDkgAdapter;
-use kerosene_vault::adapters::{
-    FrostShareSlot, FrostShareState, FrostTrShareSlot, InMemoryEconomy, InMemoryLedger, InMemoryReleaseMesh,
-    PolicyReshareHook,
-};
+#[cfg(feature = "dealer_lab")]
+use kerosene_vault::adapters::{FrostShareSlot, FrostShareState, FrostTrShareSlot, PolicyReshareHook};
+use kerosene_vault::adapters::{InMemoryEconomy, InMemoryLedger, InMemoryReleaseMesh};
 use kerosene_vault::application::{
-    AccrueGovernanceWork, ActivateRelease, BlobStorePort, ClockPort, CosignRelease, EconomyPort, GetEconomyStatus,
-    LedgerPort, ProposeRelease, RebuildRelease, ReleaseStorePort, ReshareHookPort, UpsertMiner,
+    AccrueGovernanceWork, ActivateRelease, BlobStorePort, ClockPort, CosignRelease, EconomyPort, LedgerPort,
+    ProposeRelease, RebuildRelease, ReleaseStorePort, UpsertMiner,
 };
+#[cfg(feature = "dealer_lab")]
+use kerosene_vault::application::{GetEconomyStatus, ReshareHookPort};
+#[cfg(feature = "dealer_lab")]
+use kerosene_vault::domain::{AttestationMode, DayEpoch, ResharePolicy, VaultNodeTier};
 use kerosene_vault::domain::{
-    AttestationMode, Constitution, DayEpoch, EconomyState, GovernanceJobKind, GovernanceRewardConfig, LedgerEventKind,
-    MinerOperator, NodeId, ReleasePolicy, ResharePolicy, VaultNodeTier,
+    Constitution, EconomyState, GovernanceJobKind, GovernanceRewardConfig, LedgerEventKind, MinerOperator, NodeId,
+    ReleasePolicy,
 };
 
 struct FixedClock(u64);

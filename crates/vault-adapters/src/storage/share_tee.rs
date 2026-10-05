@@ -13,22 +13,30 @@ use std::sync::Arc;
 
 #[cfg(not(feature = "production"))]
 use argon2::{Algorithm, Argon2, Params, Version};
+#[cfg(any(not(feature = "production"), feature = "tee_hw"))]
 use chacha20poly1305::aead::{Aead, KeyInit};
+#[cfg(any(not(feature = "production"), feature = "tee_hw"))]
 use chacha20poly1305::{ChaCha20Poly1305, Nonce};
+#[cfg(any(not(feature = "production"), feature = "tee_hw"))]
 use rand::RngCore;
 #[cfg(not(feature = "production"))]
 use secrecy::{ExposeSecret, SecretString};
 use sha2::{Digest, Sha256};
+#[cfg(any(not(feature = "production"), feature = "tee_hw"))]
 use zeroize::Zeroize;
 
 use crate::application::{AttestationPort, ShareStorePort};
-use crate::domain::{AttestationMode, DomainError, Measurement};
+#[cfg(feature = "tee_hw")]
+use crate::domain::AttestationMode;
+use crate::domain::{DomainError, Measurement};
 
 const MAGIC: &[u8; 8] = b"KVSEAL01";
 const ENVELOPE_VERSION: u8 = 1;
 const MODE_STAGING_STUB: u8 = 1;
 const MODE_HW_SEV: u8 = 2;
 const MODE_HW_SGX: u8 = 3;
+
+type ParsedEnvelope<'a> = (u8, [u8; 16], &'a [u8], &'a [u8]);
 
 enum SealBackend {
     /// Production / CI default: refuse seal and unseal.
@@ -91,11 +99,13 @@ impl TeeSealAdapter {
         })
     }
 
+    /// Attaches the attestation provider required before hardware seal/unseal operations.
     pub fn with_attestation(mut self, attestation: Arc<dyn AttestationPort>) -> Self {
         self.attestation = Some(attestation);
         self
     }
 
+    /// Creates an unconfigured adapter that fails closed until a backend is selected.
     pub fn new() -> Self {
         Self::fail_closed(Measurement::from_bytes(b"kerosene-vault-tee-unconfigured"))
     }
@@ -154,6 +164,7 @@ impl TeeSealAdapter {
         }
     }
 
+    #[cfg(any(not(feature = "production"), feature = "tee_hw"))]
     fn aead_encrypt(key: &[u8; 32], plaintext: &[u8]) -> Result<([u8; 12], Vec<u8>), DomainError> {
         let cipher = ChaCha20Poly1305::new_from_slice(key)
             .map_err(|e| DomainError::ShareStoreForbidden(format!("cipher: {e}")))?;
@@ -166,6 +177,7 @@ impl TeeSealAdapter {
         Ok((nonce_bytes, ciphertext))
     }
 
+    #[cfg(any(not(feature = "production"), feature = "tee_hw"))]
     fn aead_decrypt(key: &[u8; 32], nonce_bytes: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, DomainError> {
         let cipher = ChaCha20Poly1305::new_from_slice(key)
             .map_err(|e| DomainError::ShareStoreForbidden(format!("cipher: {e}")))?;
@@ -173,6 +185,7 @@ impl TeeSealAdapter {
         cipher.decrypt(nonce, ciphertext).map_err(|_| DomainError::ShareStoreForbidden("tee decrypt failed".into()))
     }
 
+    #[cfg(any(not(feature = "production"), feature = "tee_hw"))]
     fn pack_envelope(mode: u8, salt: &[u8; 16], nonce: &[u8; 12], ciphertext: &[u8]) -> Vec<u8> {
         let mut out = Vec::with_capacity(8 + 1 + 1 + 16 + 12 + ciphertext.len());
         out.extend_from_slice(MAGIC);
@@ -184,7 +197,7 @@ impl TeeSealAdapter {
         out
     }
 
-    fn parse_envelope(blob: &[u8]) -> Result<(u8, [u8; 16], &[u8], &[u8]), DomainError> {
+    fn parse_envelope(blob: &[u8]) -> Result<ParsedEnvelope<'_>, DomainError> {
         if blob.len() < 8 + 1 + 1 + 16 + 12 + 16 {
             return Err(DomainError::ShareStoreForbidden("tee seal envelope too short".into()));
         }
@@ -203,38 +216,43 @@ impl TeeSealAdapter {
         Ok((mode, salt, nonce, ciphertext))
     }
 
-    fn seal_envelope(&self, plaintext: &[u8]) -> Result<Vec<u8>, DomainError> {
-        let mut salt = [0u8; 16];
-        rand::thread_rng().fill_bytes(&mut salt);
-
-        match &self.backend {
-            SealBackend::FailClosed => Err(DomainError::TeeRequired(
+    fn seal_envelope(&self, _plaintext: &[u8]) -> Result<Vec<u8>, DomainError> {
+        if matches!(&self.backend, SealBackend::FailClosed) {
+            return Err(DomainError::TeeRequired(
                 "TEE seal path not available; host disk AEAD is lab-only (production fail-closed)".into(),
-            )),
-            #[cfg(not(feature = "production"))]
-            SealBackend::StagingStub { passphrase } => {
-                let mut key = self.derive_stub_key(passphrase, &salt)?;
-                let (nonce, ct) = Self::aead_encrypt(&key, plaintext)?;
-                key.zeroize();
-                Ok(Self::pack_envelope(MODE_STAGING_STUB, &salt, &nonce, &ct))
-            }
-            #[cfg(feature = "tee_hw")]
-            SealBackend::Hw { platform } => {
-                let mut root = Self::derive_hw_root(*platform)?;
-                let mut key = Self::mix_seal_key(&root, &salt, &self.measurement);
-                root.zeroize();
-                let mode = match platform {
-                    AttestationMode::Sev => MODE_HW_SEV,
-                    AttestationMode::Sgx => MODE_HW_SGX,
-                    AttestationMode::Sim | AttestationMode::Software => {
-                        return Err(DomainError::TeeRequired("software/sim cannot produce HW seal envelopes".into()));
-                    }
-                };
-                let (nonce, ct) = Self::aead_encrypt(&key, plaintext)?;
-                key.zeroize();
-                Ok(Self::pack_envelope(mode, &salt, &nonce, &ct))
-            }
+            ));
         }
+
+        #[cfg(not(feature = "production"))]
+        if let SealBackend::StagingStub { passphrase } = &self.backend {
+            let mut salt = [0u8; 16];
+            rand::thread_rng().fill_bytes(&mut salt);
+            let mut key = self.derive_stub_key(passphrase, &salt)?;
+            let (nonce, ct) = Self::aead_encrypt(&key, _plaintext)?;
+            key.zeroize();
+            return Ok(Self::pack_envelope(MODE_STAGING_STUB, &salt, &nonce, &ct));
+        }
+
+        #[cfg(feature = "tee_hw")]
+        if let SealBackend::Hw { platform } = &self.backend {
+            let mut salt = [0u8; 16];
+            rand::thread_rng().fill_bytes(&mut salt);
+            let mut root = Self::derive_hw_root(*platform)?;
+            let mut key = Self::mix_seal_key(&root, &salt, &self.measurement);
+            root.zeroize();
+            let mode = match platform {
+                AttestationMode::Sev => MODE_HW_SEV,
+                AttestationMode::Sgx => MODE_HW_SGX,
+                AttestationMode::Sim | AttestationMode::Software => {
+                    return Err(DomainError::TeeRequired("software/sim cannot produce HW seal envelopes".into()));
+                }
+            };
+            let (nonce, ct) = Self::aead_encrypt(&key, _plaintext)?;
+            key.zeroize();
+            return Ok(Self::pack_envelope(mode, &salt, &nonce, &ct));
+        }
+
+        Err(DomainError::TeeRequired("TEE seal backend unavailable".into()))
     }
 
     fn unseal_envelope(&self, blob: &[u8]) -> Result<Vec<u8>, DomainError> {
@@ -243,9 +261,7 @@ impl TeeSealAdapter {
             MODE_STAGING_STUB => {
                 #[cfg(feature = "production")]
                 {
-                    return Err(DomainError::TeeRequired(
-                        "staging-stub envelope refused under production feature".into(),
-                    ));
+                    Err(DomainError::TeeRequired("staging-stub envelope refused under production feature".into()))
                 }
                 #[cfg(not(feature = "production"))]
                 {
@@ -264,7 +280,7 @@ impl TeeSealAdapter {
                 #[cfg(not(feature = "tee_hw"))]
                 {
                     let _ = (salt, nonce, ciphertext);
-                    return Err(DomainError::TeeRequired("HW TEE unseal requires --features tee_hw".into()));
+                    Err(DomainError::TeeRequired("HW TEE unseal requires --features tee_hw".into()))
                 }
                 #[cfg(feature = "tee_hw")]
                 {
@@ -316,22 +332,20 @@ impl ShareStorePort for TeeSealAdapter {
     }
 
     fn put_share(&self, share_id: &str, plaintext: &[u8]) -> Result<(), DomainError> {
-        match &self.backend {
-            SealBackend::FailClosed => {
-                return Err(DomainError::TeeRequired(
-                    "TEE seal path not available; host disk AEAD is lab-only (production fail-closed)".into(),
-                ));
-            }
-            #[cfg(not(feature = "production"))]
-            SealBackend::StagingStub { .. } => {
-                if self.attestation.is_some() {
-                    self.require_attestation_ok()?;
-                }
-            }
-            #[cfg(feature = "tee_hw")]
-            SealBackend::Hw { .. } => {
+        if matches!(&self.backend, SealBackend::FailClosed) {
+            return Err(DomainError::TeeRequired(
+                "TEE seal path not available; host disk AEAD is lab-only (production fail-closed)".into(),
+            ));
+        }
+        #[cfg(not(feature = "production"))]
+        if let SealBackend::StagingStub { .. } = &self.backend {
+            if self.attestation.is_some() {
                 self.require_attestation_ok()?;
             }
+        }
+        #[cfg(feature = "tee_hw")]
+        if let SealBackend::Hw { .. } = &self.backend {
+            self.require_attestation_ok()?;
         }
         fs::create_dir_all(&self.root).map_err(|e| DomainError::ShareStoreForbidden(format!("tee seal mkdir: {e}")))?;
         let sealed = self.seal_envelope(plaintext)?;
@@ -386,7 +400,10 @@ mod hw {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(any(not(feature = "production"), feature = "tee_hw"))]
     use crate::adapters::TeeAttestationAdapter;
+    #[cfg(any(not(feature = "production"), feature = "tee_hw"))]
+    use crate::domain::AttestationMode;
 
     #[cfg(any(not(feature = "production"), feature = "tee_hw"))]
     struct TempDir(PathBuf);
@@ -474,7 +491,6 @@ mod tests {
         blob.push(MODE_STAGING_STUB);
         blob.extend_from_slice(&[0u8; 16 + 12 + 16]);
         assert!(matches!(store.unseal_envelope(&blob), Err(DomainError::TeeRequired(_))));
-        assert!(!cfg!(feature = "dealer_lab"));
     }
 
     #[cfg(not(feature = "production"))]

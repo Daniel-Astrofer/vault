@@ -10,6 +10,7 @@ pub enum ResharePolicy {
 }
 
 impl ResharePolicy {
+    /// Parse daily/on-demand configuration names, trimming whitespace and ignoring ASCII case.
     pub fn parse(raw: &str) -> Option<Self> {
         match raw.trim().to_ascii_lowercase().as_str() {
             "daily" | "auto" => Some(Self::Daily),
@@ -18,6 +19,7 @@ impl ResharePolicy {
         }
     }
 
+    /// Return the canonical lowercase policy value.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Daily => "daily",

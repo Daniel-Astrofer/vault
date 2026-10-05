@@ -25,13 +25,23 @@ pub enum TlsPeerVerifyPolicy {
     Hostname,
     /// Chain to lab/ops CA + URI SAN must be in `allowed` SPIFFE IDs (ignore DNS).
     /// Unique per-vault SPIFFE: allowlist local + seed peers (ceremony CA / SPIRE).
-    Spiffe { allowed: Vec<String> },
+    Spiffe {
+        /// Exact URI SAN values accepted after CA-chain validation.
+        allowed: Vec<String>,
+    },
     /// Chain + SPIFFE URI **and** (when host is `.onion`) matching onion DNS SAN.
     /// Env name remains `onion_or_spiffe` for compat; semantics are AND (#24).
-    OnionOrSpiffe { allowed: Vec<String> },
+    OnionOrSpiffe {
+        /// Exact URI SAN values accepted after CA-chain validation.
+        allowed: Vec<String>,
+    },
 }
 
 impl TlsPeerVerifyPolicy {
+    /// Parses a verification mode name and its allowed SPIFFE URI list.
+    ///
+    /// Recognized aliases are case-insensitive. SPIFFE-based modes require at
+    /// least one allowed URI; malformed or unsupported mode names return `None`.
     pub fn parse(raw: &str, allowed_spiffe: &[String]) -> Option<Self> {
         if matches!(raw.trim().to_ascii_lowercase().as_str(), "spiffe" | "onion_or_spiffe" | "onion+spiffe" | "tor")
             && allowed_spiffe.is_empty()
@@ -53,6 +63,7 @@ impl TlsPeerVerifyPolicy {
         Self::parse(raw, &[expected_spiffe.to_string()])
     }
 
+    /// Returns the canonical environment/configuration label for this policy.
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Hostname => "hostname",
@@ -61,6 +72,7 @@ impl TlsPeerVerifyPolicy {
         }
     }
 
+    /// Returns the SPIFFE URI allowlist, or an empty slice for hostname mode.
     pub fn allowed_spiffe(&self) -> &[String] {
         match self {
             Self::Hostname => &[],
@@ -74,7 +86,12 @@ impl TlsPeerVerifyPolicy {
     }
 }
 
-/// Build a rustls `ClientConfig` with client identity + peer verify policy.
+/// Builds a rustls client configuration with mTLS credentials and peer verification.
+///
+/// Hostname mode uses standard webpki name checks. SPIFFE modes validate the CA
+/// chain and URI allowlist; onion mode additionally requires a matching onion
+/// DNS SAN for `.onion` targets. PEM, certificate, key, or verifier errors are
+/// returned as authentication failures.
 pub fn build_mtls_rustls_client_config(
     client_cert_path: &Path,
     client_key_path: &Path,
@@ -143,7 +160,10 @@ fn load_client_identity(
     Ok((certs, key))
 }
 
-/// Extract URI and DNS SANs from an end-entity certificate DER.
+/// Extracts URI and DNS subject alternative names from an end-entity certificate.
+///
+/// Other SAN types are ignored. This only parses names from DER; it does not
+/// establish certificate trust or validate any name against a policy.
 pub fn extract_sans(end_entity_der: &[u8]) -> Result<(Vec<String>, Vec<String>), DomainError> {
     let (_, cert) = X509Certificate::from_der(end_entity_der)
         .map_err(|e| DomainError::AuthRejected(format!("parse peer cert for SAN: {e}")))?;

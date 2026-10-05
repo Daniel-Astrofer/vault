@@ -85,6 +85,12 @@ fn clean_architecture_directories_are_present() {
         "crates/vault-adapters/src/storage",
         "crates/vault-api/src/routes",
         "crates/vault-bootstrap/src/runtime",
+        "crates/vault-identity-core/src/identity",
+        "crates/vault-identityd/src/daemon",
+        "crates/vault-signer/src/protocol",
+        "crates/vault-signer/src/signing",
+        "crates/vault-signer/src/session",
+        "crates/vault-signer/src/transport",
     ] {
         assert!(Path::new(directory).is_dir(), "missing architectural directory: {directory}");
     }

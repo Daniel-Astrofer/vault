@@ -42,6 +42,8 @@
 //!
 //! See [`validate_sgx_tcb`] for the check.
 
+#![cfg_attr(not(feature = "tee_hw"), allow(dead_code))]
+
 use crate::domain::{DomainError, Measurement};
 
 /// Issue an SGX quote for `measurement` (MRENCLAVE bind target).
@@ -51,7 +53,8 @@ pub fn issue_report(measurement: &Measurement) -> Result<Vec<u8>, DomainError> {
         let _ = measurement;
         Err(DomainError::AttestationRejected(
             "SGX quote issue: tee_hw compiled but DCAP quote generation not linked (fail-closed). \
-             Requires SGX SDK + DCAP driver. See Item 2.4 in VAULT_IMPLEMENTATION_PLAN.md."
+             Requires SGX SDK + DCAP driver; see the TEE boundary in
+             docs/security/SECURE_BOOT_VAULT.md."
                 .into(),
         ))
     }
@@ -125,7 +128,7 @@ fn verify_report_structure(measurement: &Measurement, report: &[u8]) -> Result<(
     let _ = measurement;
     Err(DomainError::AttestationRejected(
         "SGX quote verify: tee_hw path structured but DCAP/QE collateral verify not linked (fail-closed). \
-         See VAULT_IMPLEMENTATION_PLAN.md Item 2.4 for integration requirements."
+         See docs/security/SECURE_BOOT_VAULT.md for integration requirements."
             .into(),
     ))
 }

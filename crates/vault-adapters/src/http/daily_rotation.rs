@@ -25,6 +25,7 @@ use crate::{build_mtls_rustls_client_config, TlsPeerVerifyPolicy};
 pub struct NoopReshareHook;
 
 impl ReshareHookPort for NoopReshareHook {
+    /// Accepts a day advance without changing key material.
     fn on_day_advance(
         &self,
         _from: &DayEpoch,
@@ -37,10 +38,12 @@ impl ReshareHookPort for NoopReshareHook {
 
 /// Records day advances for tests / lab observability.
 pub struct RecordingReshareHook {
+    /// Ordered `(previous_epoch, next_epoch)` pairs received by this hook.
     pub advances: Mutex<Vec<(String, String)>>,
 }
 
 impl RecordingReshareHook {
+    /// Creates an empty advance log.
     pub fn new() -> Self {
         Self { advances: Mutex::new(Vec::new()) }
     }
@@ -53,6 +56,7 @@ impl Default for RecordingReshareHook {
 }
 
 impl ReshareHookPort for RecordingReshareHook {
+    /// Appends the epoch transition to the observable log.
     fn on_day_advance(
         &self,
         from: &DayEpoch,
@@ -70,7 +74,9 @@ impl ReshareHookPort for RecordingReshareHook {
 /// Peer self-vote collected over an authenticated channel.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeerDayVote {
+    /// Authenticated node identity associated with the vote.
     pub voter: String,
+    /// Day epoch that this peer reports voting to advance to.
     pub day_epoch: DayEpoch,
 }
 
@@ -85,6 +91,7 @@ pub trait DayVoteTransport: Send + Sync {
 pub struct NoopDayVoteTransport;
 
 impl DayVoteTransport for NoopDayVoteTransport {
+    /// Returns no remote votes for a solo-node configuration.
     fn exchange_with_peers(&self, _local_voter: &str, _target: &DayEpoch) -> Result<Vec<PeerDayVote>, DomainError> {
         Ok(vec![])
     }
@@ -100,6 +107,7 @@ pub struct HttpDayVoteTransport {
 }
 
 impl HttpDayVoteTransport {
+    /// Creates a peer vote transport using token auth when a token is supplied.
     pub fn with_peer_http(
         peers: Vec<(String, String)>,
         auth_token: Option<String>,
@@ -108,6 +116,7 @@ impl HttpDayVoteTransport {
         Self { peers, auth_token, peer_http, tls: None }
     }
 
+    /// Creates a peer vote transport authenticated by the configured mTLS identity.
     pub fn with_mtls(
         peers: Vec<(String, String)>,
         peer_http: PeerHttpSettings,
@@ -130,6 +139,11 @@ impl HttpDayVoteTransport {
 }
 
 impl DayVoteTransport for HttpDayVoteTransport {
+    /// Posts the target epoch to each configured peer and collects successful self-votes.
+    ///
+    /// The voter identity returned in each record comes from configured peer
+    /// metadata associated with the authenticated outbound connection. An absent
+    /// or invalid reported epoch falls back to the requested target.
     fn exchange_with_peers(&self, local_voter: &str, target: &DayEpoch) -> Result<Vec<PeerDayVote>, DomainError> {
         let mut out = Vec::with_capacity(self.peers.len());
         if self.peers.is_empty() {
@@ -210,6 +224,10 @@ pub struct QuorumDailyRotation {
 }
 
 impl QuorumDailyRotation {
+    /// Creates an in-memory day rotation using the no-op peer transport.
+    ///
+    /// The threshold is clamped to at least one. The initial ledger epoch comes
+    /// from the clock and does not automatically advance if the date changes.
     pub fn new(
         clock: Arc<dyn ClockPort>,
         quorum_t: usize,
@@ -219,7 +237,10 @@ impl QuorumDailyRotation {
         Self::with_persist_path(clock, quorum_t, local_voter, reshare, None, Arc::new(NoopDayVoteTransport))
     }
 
-    /// Load `day_epoch` from `path` on boot (if present); persist on every advance.
+    /// Loads the epoch and vote map from disk when valid and persists later changes.
+    ///
+    /// Invalid or unreadable stored state falls back to the current clock day
+    /// and an empty vote map. This constructor has no peer transport.
     pub fn with_persist(
         clock: Arc<dyn ClockPort>,
         quorum_t: usize,
@@ -237,6 +258,7 @@ impl QuorumDailyRotation {
         )
     }
 
+    /// Creates a persistent rotation that also exchanges votes with peers.
     pub fn with_persist_and_transport(
         clock: Arc<dyn ClockPort>,
         quorum_t: usize,
@@ -248,6 +270,7 @@ impl QuorumDailyRotation {
         Self::with_persist_path(clock, quorum_t, local_voter, reshare, Some(path.into()), transport)
     }
 
+    /// Creates an in-memory rotation that exchanges votes with peers.
     pub fn with_transport(
         clock: Arc<dyn ClockPort>,
         quorum_t: usize,
@@ -287,15 +310,19 @@ impl QuorumDailyRotation {
         }
     }
 
+    /// Returns the configured quorum threshold, including the local vote.
     pub fn quorum_t(&self) -> usize {
         self.quorum_t
     }
 
+    /// Returns the local voter identifier used for this node's votes.
     pub fn local_voter(&self) -> &str {
         &self.local_voter
     }
 
-    /// Current in-memory vote map snapshot (tests / observability).
+    /// Counts currently recorded votes for `target` in the in-memory map.
+    ///
+    /// A poisoned mutex is treated as zero for this observability helper.
     pub fn vote_count_for(&self, target: &DayEpoch) -> usize {
         lock_mutex(&self.votes, "day votes").map(|votes| votes.values().filter(|e| *e == target).count()).unwrap_or(0)
     }
@@ -353,6 +380,7 @@ fn persist_day_votes(path: &Path, votes: &HashMap<String, DayEpoch>) -> Result<(
 }
 
 impl DailyRotationPort for QuorumDailyRotation {
+    /// Returns the ledger epoch, rejecting when the wall clock has advanced past it.
     fn current_day_epoch(&self) -> Result<DayEpoch, DomainError> {
         let live = DayEpoch::from_unix_secs(self.clock.unix_now_secs());
         let g = lock_mutex(&self.current, "day_epoch")?;
@@ -362,6 +390,7 @@ impl DailyRotationPort for QuorumDailyRotation {
         Ok(g.clone())
     }
 
+    /// Records or replaces one voter's epoch and persists the vote map when configured.
     fn record_vote(&self, voter: &str, target: &DayEpoch) -> Result<(), DomainError> {
         {
             let mut votes = lock_mutex(&self.votes, "day votes")?;
@@ -371,6 +400,11 @@ impl DailyRotationPort for QuorumDailyRotation {
         Ok(())
     }
 
+    /// Collects votes for the current clock day and advances only after quorum.
+    ///
+    /// Votes are persisted before the threshold check. Once the epoch advances,
+    /// persistence precedes the reshare hook, so a hook failure does not roll
+    /// back the already-committed day epoch.
     fn advance(&self) -> Result<DayEpoch, DomainError> {
         let live = DayEpoch::from_unix_secs(self.clock.unix_now_secs());
         self.record_vote(&self.local_voter, &live)?;
@@ -418,6 +452,7 @@ impl DailyRotationPort for QuorumDailyRotation {
         Ok(live)
     }
 
+    /// Requires the supplied epoch to equal the ledger day and not be stale by clock.
     fn require_epoch(&self, bound: &DayEpoch) -> Result<(), DomainError> {
         let cur = {
             let g = lock_mutex(&self.current, "day_epoch")?;
@@ -444,28 +479,34 @@ pub struct LedgerDayEpochStub {
 }
 
 impl LedgerDayEpochStub {
+    /// Creates a single-node rotation with no reshare side effect.
     pub fn new(clock: Arc<dyn ClockPort>) -> Self {
         Self { inner: QuorumDailyRotation::new(clock, 1, "local", Arc::new(NoopReshareHook)) }
     }
 
+    /// Creates a single-node rotation that invokes the supplied reshare hook.
     pub fn with_reshare(clock: Arc<dyn ClockPort>, reshare: Arc<dyn ReshareHookPort>) -> Self {
         Self { inner: QuorumDailyRotation::new(clock, 1, "local", reshare) }
     }
 }
 
 impl DailyRotationPort for LedgerDayEpochStub {
+    /// Delegates the current-day query to the single-node rotation.
     fn current_day_epoch(&self) -> Result<DayEpoch, DomainError> {
         self.inner.current_day_epoch()
     }
 
+    /// Delegates day advancement to the single-node rotation.
     fn advance(&self) -> Result<DayEpoch, DomainError> {
         self.inner.advance()
     }
 
+    /// Delegates epoch validation to the single-node rotation.
     fn require_epoch(&self, bound: &DayEpoch) -> Result<(), DomainError> {
         self.inner.require_epoch(bound)
     }
 
+    /// Delegates vote recording to the single-node rotation.
     fn record_vote(&self, voter: &str, target: &DayEpoch) -> Result<(), DomainError> {
         self.inner.record_vote(voter, target)
     }
@@ -478,12 +519,14 @@ pub struct MemoryDayVoteTransport {
 }
 
 impl MemoryDayVoteTransport {
+    /// Creates a transport over the peer rotations and their authenticated IDs.
     pub fn new(peers: Vec<(String, Arc<QuorumDailyRotation>)>) -> Self {
         Self { peers }
     }
 }
 
 impl DayVoteTransport for MemoryDayVoteTransport {
+    /// Records the local vote and each peer self-vote in the configured rotations.
     fn exchange_with_peers(&self, local_voter: &str, target: &DayEpoch) -> Result<Vec<PeerDayVote>, DomainError> {
         let mut out = Vec::with_capacity(self.peers.len());
         for (peer_id, rot) in &self.peers {

@@ -18,6 +18,7 @@ pub enum MeshRole {
 }
 
 impl MeshRole {
+    /// Returns the canonical lowercase role label.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Kfe => "kfe",
@@ -29,18 +30,23 @@ impl MeshRole {
 /// Resolved app-layer principal after mTLS (or lab token) authentication.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MeshPrincipal {
+    /// Application role authorized by the verified certificate identity.
     pub role: MeshRole,
+    /// Mesh node identifier bound to the principal.
     pub node_id: String,
+    /// SPIFFE URI used to derive this identity, when certificate-authenticated.
     pub spiffe_id: Option<String>,
     /// Lab static_token: may call any protected route.
     pub lab_omnipotent: bool,
 }
 
 impl MeshPrincipal {
+    /// Creates a lab-only vault principal that bypasses protected route checks.
     pub fn lab_omnipotent(local_node_id: &str) -> Self {
         Self { role: MeshRole::Vault, node_id: local_node_id.to_string(), spiffe_id: None, lab_omnipotent: true }
     }
 
+    /// Checks whether this principal's role may access the requested route class.
     pub fn allows_route(&self, class: RouteClass) -> bool {
         if self.lab_omnipotent {
             return true;
@@ -67,7 +73,10 @@ pub enum RouteClass {
     AdminRead,
 }
 
-/// Map HTTP path to route class. Returns `None` for public / unclassified.
+/// Maps an HTTP path to its authorization class, ignoring any query string.
+///
+/// Returns `None` for public or unclassified paths; callers should not treat
+/// this result alone as proof of authentication.
 pub fn route_class_for_path(path: &str) -> Option<RouteClass> {
     let p = path.split('?').next().unwrap_or(path);
     if p.starts_with("/v1/admin/") {
@@ -105,12 +114,15 @@ pub fn route_class_for_path(path: &str) -> Option<RouteClass> {
     None
 }
 
-/// Parse SPIFFE URI → role + optional vault node id from path.
+/// Parses a supported SPIFFE workload URI into role and optional node ID.
 ///
 /// Accepted shapes:
 /// - `spiffe://{td}/kfe` → Kfe
 /// - `spiffe://{td}/vault/{node_id}` → Vault + node_id
 /// - `spiffe://{td}/vault/server` → Vault, node_id unresolved (use DNS SAN)
+///
+/// This validates the workload path shape but does not validate the trust domain
+/// or certificate chain; those checks belong to the TLS verifier.
 pub fn parse_spiffe_principal(uri: &str) -> Result<(MeshRole, Option<String>), DomainError> {
     let uri = uri.trim();
     if !uri.starts_with("spiffe://") {
@@ -137,7 +149,7 @@ pub fn parse_spiffe_principal(uri: &str) -> Result<(MeshRole, Option<String>), D
     }
 }
 
-/// Build principal from leaf cert URI SANs + DNS SANs.
+/// Builds a mesh principal from the verified leaf certificate's SAN values.
 ///
 /// Prefers SPIFFE URI. For `…/vault/server`, binds node id from a DNS SAN that
 /// is in `allowed_vault_ids` (or equals `local_node_id`).
@@ -211,6 +223,12 @@ pub fn resolve_mesh_caller_identity(
     )
 }
 
+/// Resolves a caller identity using an authenticated principal and compatibility headers.
+///
+/// A non-omnipotent mTLS principal takes priority and must have the Vault role.
+/// Otherwise the mTLS peer hook takes priority over a validated node-ID header;
+/// the local node ID is the final fallback. A non-empty body claim must match
+/// the resolved identity or authentication is rejected.
 pub fn resolve_mesh_caller_identity_with_principal(
     local_node_id: &str,
     allowed_node_ids: &HashSet<String>,
@@ -251,7 +269,11 @@ pub fn resolve_mesh_caller_identity_with_principal(
     Ok(identity)
 }
 
-/// Require DKG `sender_node_id` equals authenticated TLS vault peer (Critical #4).
+/// Requires the DKG sender ID to match the authenticated Vault peer identity.
+///
+/// Lab static-token and omnipotent principals bypass identity matching after an
+/// empty sender ID is rejected. Ordinary ingest requires an authenticated Vault
+/// principal; KFE roles or mismatched node IDs are rejected.
 pub fn bind_dkg_sender_to_peer(
     sender_node_id: &str,
     principal: Option<&MeshPrincipal>,
@@ -282,7 +304,7 @@ pub fn bind_dkg_sender_to_peer(
     Ok(())
 }
 
-/// Build the allowed voter / peer id set (local + seed peers).
+/// Builds the normalized allowlist from the local ID and non-empty seed peer IDs.
 pub fn mesh_allowed_node_ids(
     local_node_id: &str,
     seed_peer_ids: impl IntoIterator<Item = impl AsRef<str>>,
@@ -397,6 +419,8 @@ mod tests {
     fn route_class_maps_settlement_and_peer() {
         assert_eq!(route_class_for_path("/v1/bitcoin/sign-psbt"), Some(RouteClass::KfeSettlement));
         assert_eq!(route_class_for_path("/v1/dkg/round1"), Some(RouteClass::VaultPeer));
+        assert_eq!(route_class_for_path("/v1/dkg/tr/channels/round1"), Some(RouteClass::VaultPeer));
+        assert_eq!(route_class_for_path("/v1/frost/tr/channels/commit"), Some(RouteClass::VaultPeer));
         assert_eq!(route_class_for_path("/v1/day/advance"), Some(RouteClass::SharedOps));
         assert_eq!(route_class_for_path("/v1/admin/status"), Some(RouteClass::AdminRead));
     }

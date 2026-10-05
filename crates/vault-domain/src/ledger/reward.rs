@@ -10,13 +10,20 @@ use crate::{BucketKind, DomainError, NodeId, ProfitSplits, SettlementIntent};
 /// Non-manual values only enforce spacing between proposes — **no auto scheduler**.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MinerPayoutCadence {
+    /// No time-based restriction is applied to payout proposals.
     Manual,
+    /// Require at least 86,400 seconds since the previous payout.
     Daily,
+    /// Require at least seven days since the previous payout.
     Weekly,
+    /// Require the current epoch to be greater than the previous payout epoch.
     Epoch,
 }
 
 impl MinerPayoutCadence {
+    /// Parse a cadence name case-insensitively after trimming surrounding whitespace.
+    ///
+    /// Returns `None` for values outside `manual`, `daily`, `weekly`, and `epoch`.
     pub fn parse(raw: &str) -> Option<Self> {
         match raw.trim().to_ascii_lowercase().as_str() {
             "manual" => Some(Self::Manual),
@@ -27,6 +34,7 @@ impl MinerPayoutCadence {
         }
     }
 
+    /// Return the canonical lowercase configuration value for this cadence.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Manual => "manual",
@@ -37,6 +45,7 @@ impl MinerPayoutCadence {
     }
 }
 
+/// Eligibility thresholds and waiting-set allocation rules for miner rewards.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RewardPolicy {
     /// Minimum 30d uptime in bps (9500 = 95%).
@@ -50,6 +59,8 @@ pub struct RewardPolicy {
 }
 
 impl RewardPolicy {
+    /// Return the initial open-set policy: 95% 30-day uptime, one attestation day,
+    /// no minimum bond, and no waiting-set share of the reward pool.
     pub fn v1_open() -> Self {
         Self {
             min_uptime_bps_30d: 9_500,
@@ -63,13 +74,18 @@ impl RewardPolicy {
 /// Governance work that earns the same spirit of miner rewards as profit share.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GovernanceJobKind {
+    /// Advancing the network's day epoch.
     DayAdvanced,
+    /// Completing a distributed key resharing operation.
     ReshareCompleted,
+    /// Participating in a release cosign operation.
     ReleaseCosign,
+    /// Activating a previously approved release.
     ReleaseActivate,
 }
 
 impl GovernanceJobKind {
+    /// Return the stable snake-case identifier used in persisted/reporting data.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::DayAdvanced => "day_advanced",
@@ -84,36 +100,53 @@ impl GovernanceJobKind {
 /// Env: `VAULT_GOVERNANCE_REWARD_SATS`, `VAULT_GOVERNANCE_REWARD_BPS`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GovernanceRewardConfig {
+    /// Fixed bounty component, denominated in satoshis.
     pub reward_sats: u64,
+    /// Additional bounty as basis points of the miner pool before accrual.
     pub reward_bps_of_pool: u32,
 }
 
 impl GovernanceRewardConfig {
+    /// Create a configuration with both fixed and pool-proportional rewards disabled.
     pub fn disabled() -> Self {
         Self { reward_sats: 0, reward_bps_of_pool: 0 }
     }
 
+    /// Return whether either bounty component can produce a nonzero reward.
     pub fn is_enabled(self) -> bool {
         self.reward_sats > 0 || self.reward_bps_of_pool > 0
     }
 
+    /// Calculate the fixed bounty plus its basis-point share of the supplied pool.
+    ///
+    /// Arithmetic saturates on overflow; basis points use 10,000 as 100%.
     pub fn bounty_sats(self, current_pool_sats: u64) -> u64 {
         let from_bps = current_pool_sats.saturating_mul(self.reward_bps_of_pool as u64) / 10_000;
         self.reward_sats.saturating_add(from_bps)
     }
 }
 
+/// Registered operator metrics and destination used for miner reward eligibility.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MinerOperator {
+    /// Stable identity of the operator in network membership.
     pub node_id: NodeId,
+    /// Registered destination to which the bank may issue miner payout intents.
     pub payout_destination: String,
+    /// Measured uptime over the preceding 30 days, expressed in basis points.
     pub uptime_bps_30d: u32,
+    /// Number of consecutive days with a valid daily attestation.
     pub attestation_streak_days: u32,
+    /// Operator bond held in satoshis.
     pub bond_sats: u64,
+    /// Whether the operator is in the waiting set and excluded from active rewards.
     pub waiting: bool,
 }
 
 impl MinerOperator {
+    /// Check active-set eligibility against uptime, attestation, bond, and destination policy.
+    ///
+    /// Waiting operators and operators with a blank destination are always ineligible.
     pub fn is_eligible(&self, policy: &RewardPolicy) -> bool {
         if self.waiting {
             return false;
@@ -125,13 +158,20 @@ impl MinerOperator {
     }
 }
 
+/// In-memory accounting state for operator eligibility, pools, credits, and payout cadence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EconomyState {
+    /// Eligibility thresholds applied to registered operators.
     pub policy: RewardPolicy,
+    /// Operators keyed by their canonical node identifier string.
     pub operators: BTreeMap<String, MinerOperator>,
+    /// Miner rewards available for payout, in satoshis.
     pub miner_pool_sats: u64,
+    /// Profit allocated to channel incentives, in satoshis.
     pub channels_pool_sats: u64,
+    /// Profit allocated to infrastructure, in satoshis.
     pub infra_pool_sats: u64,
+    /// Cumulative profit recorded by this economy state, in satoshis.
     pub accrued_profit_sats: u64,
     /// Governance job bounty still sitting in the miner pool (pending bank Intent).
     pub pending_governance_reward_sats: u64,
@@ -139,30 +179,44 @@ pub struct EconomyState {
     pub governance_credits: BTreeMap<String, u64>,
     /// Optional PQ suite alongside classical (dual-stack placeholder).
     pub crypto_suite_id_pq: String,
+    /// Unix timestamp of the last recorded miner payout, when one exists.
     pub last_miner_payout_at_secs: Option<u64>,
+    /// Epoch of the last recorded payout, when epoch cadence was used.
     pub last_miner_payout_epoch: Option<u64>,
 }
 
+/// Accounting result for a governance job bounty and participant credit allocation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GovernanceAccrual {
+    /// Governance operation that earned the bounty.
     pub job: GovernanceJobKind,
+    /// Total configured bounty calculated for this operation.
     pub bounty_sats: u64,
+    /// Amount added to the miner pool for later bank-issued payout.
     pub accrued_to_pool_sats: u64,
+    /// Per-operator lifetime credit increments applied for eligible participants.
     pub credited: Vec<(NodeId, u64)>,
+    /// Deduplicated participant list supplied to the accrual operation.
     pub participants: Vec<NodeId>,
+    /// Number of participants that met the active operator policy.
     pub eligible_credited: usize,
 }
 
 /// Result of allocating profit across MINERS / CHANNELS / INFRA pools.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProfitSplitAccrual {
+    /// Total incoming profit distributed by this operation, in satoshis.
     pub profit_sats: u64,
+    /// Amount allocated to MINERS, in satoshis.
     pub miners_sats: u64,
+    /// Amount allocated to CHANNELS, in satoshis.
     pub channels_sats: u64,
+    /// Amount allocated to INFRA, in satoshis.
     pub infra_sats: u64,
 }
 
 impl EconomyState {
+    /// Initialize empty reward pools with the default open-set eligibility policy.
     pub fn new_open() -> Self {
         Self {
             policy: RewardPolicy::v1_open(),
@@ -179,6 +233,10 @@ impl EconomyState {
         }
     }
 
+    /// Insert or replace an operator after rejecting path-like payout destinations.
+    ///
+    /// The destination is later checked against the registered operator when
+    /// bank-issued miner intents are validated.
     pub fn upsert_operator(&mut self, op: MinerOperator) -> Result<(), DomainError> {
         if op.payout_destination.contains("..")
             || op.payout_destination.contains('/')
@@ -190,6 +248,7 @@ impl EconomyState {
         Ok(())
     }
 
+    /// Return active operators that satisfy the current reward policy.
     pub fn eligible_active(&self) -> Vec<&MinerOperator> {
         self.operators.values().filter(|o| o.is_eligible(&self.policy)).collect()
     }
@@ -311,6 +370,10 @@ impl EconomyState {
         Ok(out)
     }
 
+    /// Debit the miner pool and consume pending governance rewards first.
+    ///
+    /// Returns [`DomainError::InsufficientMinerPool`] without changing state if
+    /// `amount` exceeds the available pool.
     pub fn debit_pool(&mut self, amount: u64) -> Result<(), DomainError> {
         if amount > self.miner_pool_sats {
             return Err(DomainError::InsufficientMinerPool { have: self.miner_pool_sats, want: amount });
@@ -368,6 +431,7 @@ impl EconomyState {
         }
     }
 
+    /// Record payout time and, when supplied, the epoch used for cadence checks.
     pub fn record_miner_payout(&mut self, at_secs: u64, epoch: Option<u64>) {
         self.last_miner_payout_at_secs = Some(at_secs);
         if let Some(e) = epoch {
@@ -382,14 +446,19 @@ impl EconomyState {
     }
 }
 
+/// Portion of a proposed miner payout assigned to one registered operator.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MinerPayoutShare {
+    /// Operator receiving this share of the proposed payout.
     pub node_id: NodeId,
+    /// Registered payout destination for the operator.
     pub destination: String,
+    /// Share amount in satoshis.
     pub amount_sats: u64,
 }
 
 impl MinerPayoutShare {
+    /// Convert this allocation into a bank-issued settlement intent in the MINERS bucket.
     pub fn to_intent(
         &self,
         intent_id: impl Into<String>,
@@ -400,6 +469,10 @@ impl MinerPayoutShare {
 }
 
 /// Reject vault self-payment: payout destination must match registered operator, not invented.
+///
+/// Non-MINERS intents are unaffected. A MINERS intent must target an eligible
+/// operator's registered destination or the function returns
+/// [`DomainError::MinerSelfPayForbidden`].
 pub fn assert_bank_issued_miner_payout(economy: &EconomyState, intent: &SettlementIntent) -> Result<(), DomainError> {
     if intent.bucket != BucketKind::Miners {
         return Ok(());

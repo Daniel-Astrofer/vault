@@ -24,18 +24,22 @@ use std::collections::HashSet;
 /// Leaf client certificate DER from the completed mTLS handshake.
 #[derive(Clone, Debug)]
 pub struct PeerClientCert {
+    /// DER-encoded leaf certificate bytes, shared across request extensions.
     pub leaf_der: Arc<[u8]>,
 }
 
 impl PeerClientCert {
+    /// Copies a rustls certificate into the request-extension representation.
     pub fn from_der(der: CertificateDer<'static>) -> Self {
         Self { leaf_der: Arc::from(der.as_ref().to_vec().into_boxed_slice()) }
     }
 
+    /// Extracts URI and DNS subject alternative names from the leaf certificate.
     pub fn uri_and_dns_sans(&self) -> Result<(Vec<String>, Vec<String>), DomainError> {
         extract_sans(self.leaf_der.as_ref())
     }
 
+    /// Resolves this certificate's SANs to a mesh principal and validates its node ID.
     pub fn to_principal(
         &self,
         local_node_id: &str,
@@ -53,10 +57,15 @@ pub struct PeerCertAcceptor {
 }
 
 impl PeerCertAcceptor {
+    /// Wraps an existing rustls acceptor while preserving its TLS configuration.
     pub fn new(inner: RustlsAcceptor) -> Self {
         Self { inner }
     }
 
+    /// Builds a peer-certificate acceptor from a rustls server configuration.
+    ///
+    /// Client certificate trust and verification remain controlled by that
+    /// server configuration; this wrapper only exposes the verified leaf.
     pub fn from_config(config: Arc<rustls::ServerConfig>) -> Self {
         let rustls_config = axum_server::tls_rustls::RustlsConfig::from_config(config);
         Self::new(RustlsAcceptor::new(rustls_config))

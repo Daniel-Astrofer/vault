@@ -7,12 +7,18 @@ use bitcoin::{Address, Network, ScriptBuf};
 
 use crate::domain::{assert_outputs_match_intent, BitcoinNetwork, DomainError, PsbtPolicy, RbfPolicy};
 
+/// Converts the domain Bitcoin network identifier to the `bitcoin` crate enum.
 pub fn to_bitcoin_network(network: BitcoinNetwork) -> Network {
     match network {
         BitcoinNetwork::Testnet3 => Network::Testnet,
     }
 }
 
+/// Validates a destination for the configured network and derives its script.
+///
+/// Both domain-level address checks and the Bitcoin library's network check are
+/// applied. Invalid address syntax returns `InvalidIntent`; network mismatches
+/// return `BitcoinNetworkMismatch`.
 pub fn destination_script_pubkey(network: BitcoinNetwork, destination: &str) -> Result<ScriptBuf, DomainError> {
     crate::domain::validate_destination(network, destination)?;
     let unchecked = destination.trim().parse::<Address<NetworkUnchecked>>().map_err(|_| {
@@ -24,6 +30,11 @@ pub fn destination_script_pubkey(network: BitcoinNetwork, destination: &str) -> 
     Ok(checked.script_pubkey())
 }
 
+/// Validates PSBT input/output values, absolute fee, fee rate, locktime, and RBF policy.
+///
+/// Every input must provide a witness UTXO or a previous transaction containing
+/// the referenced output. This checks the fee and transaction policy only; it
+/// does not bind outputs to a particular Intent or verify ownership of inputs.
 pub fn validate_psbt(policy: &PsbtPolicy, psbt: &Psbt) -> Result<(), DomainError> {
     let tx = &psbt.unsigned_tx;
     let mut input_sats = 0u64;
@@ -77,6 +88,11 @@ pub fn validate_psbt(policy: &PsbtPolicy, psbt: &Psbt) -> Result<(), DomainError
     Ok(())
 }
 
+/// Applies transaction policy and binds unsigned outputs to an Intent payment.
+///
+/// The payment script and amount must match the requested destination; any
+/// additional permitted change is checked against `change_script` by the domain
+/// binding rule. This function does not sign the PSBT.
 pub fn validate_psbt_independent(
     policy: &PsbtPolicy,
     psbt: &Psbt,

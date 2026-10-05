@@ -24,8 +24,11 @@ const MAX_MESSAGE_SIZE: usize = 1_048_576;
 pub enum SignerRequest {
     /// Create a new signing session.
     CreateSession {
-        message: String,            // hex-encoded
-        participants: Vec<Vec<u8>>, // identifiers as bytes
+        /// Message to be signed, encoded as hexadecimal.
+        message: String,
+        /// Participant identifiers encoded as byte vectors.
+        participants: Vec<Vec<u8>>,
+        /// Minimum number of participants required for the signing session.
         min_signers: u16,
     },
     /// Install key packages (must be sent before signing).
@@ -37,16 +40,32 @@ pub enum SignerRequest {
     ///
     /// `commitments` is a JSON array of `[identifier, SigningCommitments]` pairs
     /// serialized via serde. The identifier is a u16 encoded as JSON number.
-    SubmitCommitments { session_id: String, commitments: serde_json::Value },
+    SubmitCommitments {
+        /// Session receiving these round-one commitments.
+        session_id: String,
+        /// Serialized array of `[identifier, SigningCommitments]` pairs.
+        commitments: serde_json::Value,
+    },
     /// Submit round 2 signature share.
     ///
     /// `share` is a JSON value representing a `(Identifier, SignatureShare)` pair
     /// serialized via serde.
-    SubmitSignatureShare { session_id: String, share: serde_json::Value },
+    SubmitSignatureShare {
+        /// Session receiving this round-two signature share.
+        session_id: String,
+        /// Serialized `(Identifier, SignatureShare)` pair.
+        share: serde_json::Value,
+    },
     /// Get the current aggregated signature.
-    GetSignature { session_id: String },
+    GetSignature {
+        /// Session whose aggregated signature is requested.
+        session_id: String,
+    },
     /// Get session status.
-    SessionStatus { session_id: String },
+    SessionStatus {
+        /// Session whose current protocol state is requested.
+        session_id: String,
+    },
     /// Health check.
     Health,
 }
@@ -55,7 +74,10 @@ pub enum SignerRequest {
 #[derive(Debug, Serialize, Deserialize)]
 pub enum SignerResponse {
     /// Session created successfully.
-    SessionCreated { session_id: String },
+    SessionCreated {
+        /// Identifier assigned to the created session.
+        session_id: String,
+    },
     /// Commitments accepted.
     CommitmentsAccepted,
     /// Key packages installed successfully.
@@ -63,19 +85,40 @@ pub enum SignerResponse {
     /// Signature share accepted.
     SignatureShareAccepted,
     /// Aggregated signature ready.
-    Signature { signature: Vec<u8> },
+    Signature {
+        /// Encoded aggregate signature bytes.
+        signature: Vec<u8>,
+    },
     /// Session status.
-    SessionStatus { state: String, commitments_count: usize, shares_count: usize, min_signers: usize },
+    SessionStatus {
+        /// Current signer-session state label.
+        state: String,
+        /// Number of participants whose commitments have been recorded.
+        commitments_count: usize,
+        /// Number of signature shares currently accepted.
+        shares_count: usize,
+        /// Minimum participant threshold configured for the session.
+        min_signers: usize,
+    },
     /// Health check response.
-    Health { status: String, active_sessions: usize },
+    Health {
+        /// Signer daemon health label.
+        status: String,
+        /// Number of currently active signing sessions.
+        active_sessions: usize,
+    },
     /// Error response.
-    Error { message: String },
+    Error {
+        /// Human-readable description of the rejected or failed request.
+        message: String,
+    },
 }
 
 // ---------------------------------------------------------------------------
 // Wire format: 4-byte big-endian length prefix + JSON body
 // ---------------------------------------------------------------------------
 
+/// Serialize a response and prefix its JSON body with a four-byte big-endian length.
 fn encode_message(msg: &SignerResponse) -> Result<Vec<u8>, SignerError> {
     let json = serde_json::to_vec(msg).map_err(|e| SignerError::Internal(format!("serialization: {e}")))?;
 
@@ -90,17 +133,7 @@ fn encode_message(msg: &SignerResponse) -> Result<Vec<u8>, SignerError> {
     Ok(buf)
 }
 
-fn decode_message(data: &[u8]) -> Result<SignerRequest, SignerError> {
-    if data.len() < 4 {
-        return Err(SignerError::Internal("message too short".into()));
-    }
-    let len = u32::from_be_bytes(data[..4].try_into().unwrap()) as usize;
-    if len > MAX_MESSAGE_SIZE || 4 + len > data.len() {
-        return Err(SignerError::Internal("invalid message length".into()));
-    }
-    serde_json::from_slice(&data[4..4 + len]).map_err(|e| SignerError::Internal(format!("deserialization: {e}")))
-}
-
+/// Serialize a request and prefix its JSON body with a four-byte big-endian length.
 fn encode_request(msg: &SignerRequest) -> Result<Vec<u8>, SignerError> {
     let json = serde_json::to_vec(msg).map_err(|e| SignerError::Internal(format!("serialization: {e}")))?;
     if json.len() > MAX_MESSAGE_SIZE {
@@ -119,6 +152,7 @@ fn encode_request(msg: &SignerRequest) -> Result<Vec<u8>, SignerError> {
 
 /// IPC server that listens on a Unix domain socket.
 pub struct SignerIpc {
+    /// Filesystem path bound as the Unix domain socket.
     socket_path: String,
 }
 
@@ -169,6 +203,7 @@ impl SignerIpc {
         Ok(())
     }
 
+    /// Read one length-prefixed request, invoke the handler, and write its response frame.
     fn handle_connection<F>(mut stream: UnixStream, handler: &F) -> Result<(), SignerError>
     where
         F: Fn(SignerRequest) -> SignerResponse,
@@ -206,6 +241,7 @@ impl SignerIpc {
 
 /// IPC client for connecting to the signer daemon.
 pub struct SignerClient {
+    /// Filesystem path of the signer Unix domain socket.
     socket_path: String,
 }
 

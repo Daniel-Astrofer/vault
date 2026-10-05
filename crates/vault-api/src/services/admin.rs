@@ -29,6 +29,7 @@ pub struct AdminService {
 }
 
 impl AdminService {
+    /// Creates the read-only admin service over an initialized vault runtime.
     pub fn new(runtime: Arc<VaultRuntime>) -> Self {
         Self { runtime }
     }
@@ -42,11 +43,12 @@ impl AdminService {
     pub fn status(&self, request_id: &str) -> VaultAdminStatusV1 {
         let online = self.runtime.online.online_count();
         let t = self.runtime.threshold.group().t;
+        let financial_material_ready = self.runtime.frost_tr.is_some() && self.runtime.frost_tr_channels.is_some();
         VaultAdminStatusV1 {
             contract_version: ADMIN_CONTRACT_VERSION.to_string(),
             request_id: request_id.to_string(),
             local_ready: true,
-            financial_ready: online >= t,
+            financial_ready: online >= t && financial_material_ready,
             node_id: self.runtime.config.node_id.as_str().to_string(),
             ceremony_mode: self.runtime.config.ceremony_mode.as_str().to_string(),
             bitcoin_network: self.runtime.config.bitcoin_network.as_str().to_string(),
@@ -57,6 +59,7 @@ impl AdminService {
     pub fn health(&self, request_id: &str) -> NodeAdminStatusV1 {
         let online = self.runtime.online.online_count();
         let t = self.runtime.threshold.group().t;
+        let financial_material_ready = self.runtime.frost_tr.is_some() && self.runtime.frost_tr_channels.is_some();
         NodeAdminStatusV1 {
             contract_version: ADMIN_CONTRACT_VERSION.to_string(),
             request_id: request_id.to_string(),
@@ -65,7 +68,7 @@ impl AdminService {
             local_ready: true,
             member_ready: online > 0,
             quorum_ready: online >= t,
-            financial_ready: online >= t,
+            financial_ready: online >= t && financial_material_ready,
             live_members: online as u64,
             threshold: t as u16,
         }
@@ -256,8 +259,8 @@ mod tests {
 
     #[test]
     fn days_to_date_known() {
-        // 2026-07-30 ≈ 20669 days since epoch
-        let days = 20669;
+        // 2026-07-30 is 20664 days since the Unix epoch.
+        let days = 20664;
         let (y, m, d) = days_to_date(days);
         assert_eq!(y, 2026);
         assert_eq!(m, 7);

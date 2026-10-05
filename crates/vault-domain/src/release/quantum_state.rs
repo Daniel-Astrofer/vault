@@ -122,14 +122,17 @@ pub struct DrillReport {
 }
 
 impl DrillReport {
+    /// Construct a successful testnet drill summary with no recorded errors.
     pub fn success(utxos: u64, fees: u64, duration_ms: u64) -> Self {
         Self { duration_ms, utxos_swept: utxos, fees_spent_sat: fees, errors: vec![] }
     }
 
+    /// Construct a failed drill summary containing the supplied error messages.
     pub fn failed(errors: Vec<String>) -> Self {
         Self { duration_ms: 0, utxos_swept: 0, fees_spent_sat: 0, errors }
     }
 
+    /// Return whether the report contains no recorded errors.
     pub fn is_success(&self) -> bool {
         self.errors.is_empty()
     }
@@ -151,6 +154,7 @@ pub struct SweepReport {
 }
 
 impl SweepReport {
+    /// Return whether the sweep report contains no recorded errors.
     pub fn is_success(&self) -> bool {
         self.errors.is_empty()
     }

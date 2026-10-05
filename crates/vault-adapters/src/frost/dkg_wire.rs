@@ -17,7 +17,7 @@
 //! via `VAULT_DKG_MODE=distributed` (`DistributedDkgAdapter::run_in_process`).
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Mutex;
 
 use frost_secp256k1 as frost;
@@ -32,14 +32,19 @@ use crate::application::ShareStorePort;
 use crate::domain::DomainError;
 use crate::{build_mtls_rustls_client_config, post_json_with_retry, PeerHttpSettings, TlsPeerVerifyPolicy};
 
+/// Local protocol phase of a distributed wire DKG session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WireDkgPhase {
+    /// Round-one public packages are being collected.
     Round1,
+    /// Round-two private packages addressed to this node are being collected.
     Round2,
+    /// The local key package was generated and persisted.
     Complete,
 }
 
 impl WireDkgPhase {
+    /// Return the stable lowercase phase label used in status responses.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Round1 => "round1",
@@ -55,24 +60,41 @@ pub enum WireDkgPeerAuth {
     /// Lab: send `X-Vault-Token` over plain HTTP.
     StaticToken(String),
     /// Gate: mTLS client identity; never send static token header.
-    MutualTls { client_cert_path: PathBuf, client_key_path: PathBuf, ca_path: PathBuf, verify: TlsPeerVerifyPolicy },
+    MutualTls {
+        /// PEM client certificate presented to the remote vault.
+        client_cert_path: PathBuf,
+        /// PEM private key corresponding to the client certificate.
+        client_key_path: PathBuf,
+        /// CA bundle used to validate the remote server certificate.
+        ca_path: PathBuf,
+        /// Peer certificate verification policy for the TLS connection.
+        verify: TlsPeerVerifyPolicy,
+    },
 }
 
 impl WireDkgPeerAuth {
+    /// Return whether outbound posts use mutual TLS.
     pub fn is_mtls(&self) -> bool {
         matches!(self, Self::MutualTls { .. })
     }
 }
 
+/// Public round-one DKG package broadcast by each participant.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Round1WireMessage {
+    /// Identifier shared by every participant in this DKG attempt.
     pub session_id: String,
+    /// Mesh identity of the participant that generated the package.
     pub sender_node_id: String,
+    /// One-based FROST identifier assigned from the sorted roster.
     pub sender_identifier: u16,
+    /// Number of participants frozen into the session.
     pub max_signers: u16,
+    /// Threshold required for the resulting key package.
     pub min_signers: u16,
     /// SHA-256 hex binding of frozen session constitution (see `session_transcript`).
     pub transcript_hex: String,
+    /// Serialized public round-one package encoded as hexadecimal.
     pub package_hex: String,
     /// Optional hybrid envelope (X25519 + ML-KEM-768). When present the
     /// envelope must validate before the plain payload is accepted.
@@ -80,15 +102,22 @@ pub struct Round1WireMessage {
     pub envelope: Option<crate::domain::HybridEnvelope>,
 }
 
+/// Private round-two DKG package addressed to exactly one participant.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Round2WireMessage {
+    /// Identifier shared by every participant in this DKG attempt.
     pub session_id: String,
+    /// Mesh identity of the participant that generated the package.
     pub sender_node_id: String,
+    /// One-based FROST identifier assigned to the sender.
     pub sender_identifier: u16,
+    /// Intended receiver's mesh identity.
     pub recipient_node_id: String,
+    /// One-based FROST identifier assigned to the recipient.
     pub recipient_identifier: u16,
     /// Must match the frozen round1 transcript.
     pub transcript_hex: String,
+    /// Serialized recipient-specific round-two package encoded as hexadecimal.
     pub package_hex: String,
     /// Optional hybrid envelope. When present, must validate before
     /// the round2 package is processed.
@@ -96,35 +125,53 @@ pub struct Round2WireMessage {
     pub envelope: Option<crate::domain::HybridEnvelope>,
 }
 
+/// Optional round-three trigger request for a DKG session.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Round3WireRequest {
+    /// Session to finalize on this vault.
     pub session_id: String,
     /// When true, run part3 if round2 inbox is full (idempotent if already complete).
     #[serde(default)]
     pub finalize: bool,
 }
 
+/// Frozen participant set and threshold parameters used to start distributed DKG.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DkgStartRequest {
+    /// Caller-selected session identifier.
     pub session_id: String,
+    /// Total participant count expected in the roster.
     pub max_signers: u16,
+    /// Minimum participant threshold for the generated key.
     pub min_signers: u16,
     /// Sorted unique node ids (includes self). Assigned frost ids 1..=n in sort order.
     pub roster: Vec<String>,
 }
 
+/// Public progress information for one local DKG session.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WireDkgStatus {
+    /// Session identifier.
     pub session_id: String,
+    /// Stable lowercase name of the current DKG phase.
     pub phase: String,
+    /// Local vault's node identifier.
     pub local_node_id: String,
+    /// Local node's one-based FROST participant identifier.
     pub local_identifier: u16,
+    /// Total participants frozen into the transcript.
     pub max_signers: u16,
+    /// Signature threshold frozen into the transcript.
     pub min_signers: u16,
+    /// SHA-256 digest binding session id, thresholds, and sorted participants.
     pub transcript_hex: String,
+    /// Number of round-one packages held, including the local package.
     pub round1_received: usize,
+    /// Number of remote round-two packages held.
     pub round2_received: usize,
+    /// Whether finalization and local persistence completed.
     pub complete: bool,
+    /// Group verifying key in hex when available after completion.
     pub verifying_key_hex: Option<String>,
 }
 
@@ -153,6 +200,7 @@ struct SessionInner {
 }
 
 impl SessionInner {
+    /// Project mutable round state into a public status value.
     fn status(&self) -> WireDkgStatus {
         let verifying_key_hex =
             self.pubkey_package.as_ref().map(|pk| hex::encode(pk.verifying_key().serialize().unwrap_or_default()));
@@ -172,11 +220,13 @@ impl SessionInner {
     }
 }
 
+/// Convert a one-based wire identifier into the FROST library identifier type.
 fn identifier_from_u16(v: u16) -> Result<Identifier, DomainError> {
     Identifier::try_from(v).map_err(|e| DomainError::ThresholdError(format!("identifier {v}: {e}")))
 }
 
 /// Roster is BTreeMap sorted by node_id; frost ids were assigned 1..=n in that order.
+/// Convert a roster identifier back to its one-based wire number, or zero if absent.
 fn identifier_to_u16(roster: &BTreeMap<String, Identifier>, id: Identifier) -> u16 {
     for (i, (_, rid)) in roster.iter().enumerate() {
         if *rid == id {
@@ -186,6 +236,7 @@ fn identifier_to_u16(roster: &BTreeMap<String, Identifier>, id: Identifier) -> u
     0
 }
 
+/// Trim, sort, and deduplicate node IDs, then assign stable one-based FROST identifiers.
 fn build_roster(roster: &[String]) -> Result<BTreeMap<String, Identifier>, DomainError> {
     let mut sorted: Vec<String> = roster.iter().map(|s| s.trim().to_string()).collect();
     sorted.sort();
@@ -225,6 +276,7 @@ pub fn session_transcript(
     hex::encode(h.finalize())
 }
 
+/// Confirm the generated private and public key packages match the frozen group dimensions.
 fn assert_threshold(kp: &KeyPackage, pk: &PublicKeyPackage, min: u16, max: u16) -> Result<(), DomainError> {
     if *kp.min_signers() != min {
         return Err(DomainError::ThresholdError(format!(
@@ -248,6 +300,7 @@ fn assert_threshold(kp: &KeyPackage, pk: &PublicKeyPackage, min: u16, max: u16) 
     Ok(())
 }
 
+/// Build the HTTP transport and attach TLS configuration when peer auth selects mTLS.
 fn build_http_client(auth: &WireDkgPeerAuth, peer_http: &PeerHttpSettings) -> Result<reqwest::Client, DomainError> {
     let builder = peer_http.apply_builder(reqwest::Client::builder())?;
     match auth {
@@ -291,6 +344,7 @@ pub struct WireDkgHub {
 }
 
 impl WireDkgHub {
+    /// Create a hub using default clearnet peer HTTP settings.
     pub fn new(
         local_node_id: impl Into<String>,
         peer_addrs: BTreeMap<String, String>,
@@ -299,6 +353,7 @@ impl WireDkgHub {
         Self::with_peer_http(local_node_id, peer_addrs, peer_auth, PeerHttpSettings::clearnet_defaults())
     }
 
+    /// Create a hub using the supplied retry, timeout, and proxy settings.
     pub fn with_peer_http(
         local_node_id: impl Into<String>,
         peer_addrs: BTreeMap<String, String>,
@@ -327,6 +382,7 @@ impl WireDkgHub {
             .expect("static_token dkg http client")
     }
 
+    /// Report the configured outbound peer authentication mode.
     pub fn peer_auth_mode(&self) -> &'static str {
         if self.peer_auth.is_mtls() {
             "mtls"
@@ -335,10 +391,12 @@ impl WireDkgHub {
         }
     }
 
+    /// Return the most recently completed local key package, if any.
     pub fn completed_local(&self) -> Option<(KeyPackage, PublicKeyPackage, u16)> {
         self.completed.lock().expect("dkg completed").clone()
     }
 
+    /// Return status for a local session or an error if its identifier is unknown.
     pub fn status(&self, session_id: &str) -> Result<WireDkgStatus, DomainError> {
         let g = self.sessions.lock().expect("dkg sessions");
         let s = g
@@ -348,6 +406,9 @@ impl WireDkgHub {
     }
 
     /// Start local session: run part1, freeze roster+threshold, return wire message for fan-out.
+    ///
+    /// A repeated start is idempotent only when session id, roster, and thresholds
+    /// match the original transcript. The local node must be included in that roster.
     pub fn start(&self, req: DkgStartRequest) -> Result<(WireDkgStatus, Round1WireMessage), DomainError> {
         if req.max_signers < 2 || req.min_signers < 2 || req.min_signers > req.max_signers {
             return Err(DomainError::ThresholdError(format!(
@@ -404,8 +465,8 @@ impl WireDkgHub {
             DomainError::ThresholdError(format!("local node {} missing from DKG roster", self.local_node_id))
         })?;
 
-        let mut rng = OsRng;
-        let (secret, package) = frost::keys::dkg::part1(local_identifier, req.max_signers, req.min_signers, &mut rng)
+        let rng = OsRng;
+        let (secret, package) = frost::keys::dkg::part1(local_identifier, req.max_signers, req.min_signers, rng)
             .map_err(|e| DomainError::ThresholdError(format!("frost dkg part1: {e}")))?;
 
         let package_hex = hex::encode(
@@ -450,6 +511,7 @@ impl WireDkgHub {
     }
 
     /// Ingest a peer's round1 package. Auto-advances to part2 when all packages present.
+    /// Unknown senders, changed thresholds/transcript, and late joins are rejected.
     pub fn ingest_round1(&self, msg: Round1WireMessage) -> Result<WireDkgStatus, DomainError> {
         // Validate hybrid envelope if present (fail-closed on invalid envelope).
         if let Some(ref env) = msg.envelope {
@@ -512,6 +574,7 @@ impl WireDkgHub {
         Ok(session.status())
     }
 
+    /// Consume the round-one secret and create recipient-specific round-two packages.
     fn advance_to_round2(session: &mut SessionInner) -> Result<(), DomainError> {
         let secret =
             session.round1_secret.take().ok_or_else(|| DomainError::ThresholdError("missing round1 secret".into()))?;
@@ -527,6 +590,7 @@ impl WireDkgHub {
     }
 
     /// Packages this vault must send for round2 (after advance).
+    /// The outbound map is drained before each package is serialized.
     pub fn take_round2_outbound(&self, session_id: &str) -> Result<Vec<Round2WireMessage>, DomainError> {
         let mut g = self.sessions.lock().expect("dkg sessions");
         let session = g
@@ -558,6 +622,7 @@ impl WireDkgHub {
         Ok(out)
     }
 
+    /// Validate and retain a peer's round-two package addressed to this vault.
     pub fn ingest_round2(&self, msg: Round2WireMessage) -> Result<WireDkgStatus, DomainError> {
         // Validate hybrid envelope if present (fail-closed).
         if let Some(ref env) = msg.envelope {
@@ -600,6 +665,7 @@ impl WireDkgHub {
     }
 
     /// Finalize part3 when round2 inbox has n-1 packages. Persists only local share.
+    /// Repeated calls after completion return the existing status without regenerating keys.
     pub fn finalize_round3(
         &self,
         session_id: &str,
@@ -645,6 +711,7 @@ impl WireDkgHub {
         Ok(session.status())
     }
 
+    /// Add the static token header when configured; mTLS identity is carried by the client.
     fn apply_peer_auth_headers(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         match &self.peer_auth {
             WireDkgPeerAuth::StaticToken(token) => req.header("X-Vault-Token", token),
@@ -672,6 +739,7 @@ impl WireDkgHub {
         Ok(())
     }
 
+    /// Deliver private round-two messages only to their named recipients.
     pub async fn fanout_round2(&self, messages: &[Round2WireMessage]) -> Result<(), DomainError> {
         let mtls = self.peer_auth.is_mtls();
         for msg in messages {
@@ -888,10 +956,5 @@ mod tests {
             unreachable!("expected AuthRejected when mTLS files missing");
         };
         assert!(matches!(err, DomainError::AuthRejected(_)));
-    }
-
-    #[allow(dead_code)]
-    fn _path_type(p: &Path) -> &Path {
-        p
     }
 }

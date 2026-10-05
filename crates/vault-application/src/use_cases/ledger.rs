@@ -3,16 +3,23 @@ use std::sync::Arc;
 use crate::ports::LedgerPort;
 use vault_domain::{DomainError, EpochAdvanceProposal, LedgerEntry, LedgerEventKind, NodeId};
 
+/// Use case that creates and records a proposal to advance the governance epoch.
 pub struct ProposeEpochAdvance {
     ledger: Arc<dyn LedgerPort>,
     local_node: NodeId,
 }
 
 impl ProposeEpochAdvance {
+    /// Creates the use case for the ledger and the node submitting proposals.
     pub fn new(ledger: Arc<dyn LedgerPort>, local_node: NodeId) -> Self {
         Self { ledger, local_node }
     }
 
+    /// Creates a proposal for the current epoch and appends its initial vote event.
+    ///
+    /// The local node must belong to the active set. The proposal is stored before
+    /// the ledger event is appended, so an append failure may leave the proposal
+    /// persisted without its corresponding event.
     pub fn execute(&self, proposal_id: &str) -> Result<EpochAdvanceProposal, DomainError> {
         let epoch = self.ledger.epoch()?;
         if !epoch.contains(&self.local_node) {
@@ -31,16 +38,23 @@ impl ProposeEpochAdvance {
     }
 }
 
+/// Use case that records a node's vote and advances the epoch when quorum is met.
 pub struct VoteEpochAdvance {
     ledger: Arc<dyn LedgerPort>,
     local_node: NodeId,
 }
 
 impl VoteEpochAdvance {
+    /// Creates the voting use case for the ledger and local voter identity.
     pub fn new(ledger: Arc<dyn LedgerPort>, local_node: NodeId) -> Self {
         Self { ledger, local_node }
     }
 
+    /// Adds the local vote after validating epoch and constitution binding.
+    ///
+    /// When the constitution's governance threshold is reached, closes the
+    /// proposal and advances the ledger epoch. Votes and closure are saved before
+    /// the epoch transition and its event are appended.
     pub fn execute(&self, proposal_id: &str) -> Result<EpochAdvanceProposal, DomainError> {
         let epoch = self.ledger.epoch()?;
         if !epoch.contains(&self.local_node) {
@@ -68,6 +82,7 @@ impl VoteEpochAdvance {
         Ok(proposal)
     }
 
+    /// Updates the epoch state and appends its hash-chained advance event.
     fn advance_epoch(&self, proposal: &EpochAdvanceProposal) -> Result<(), DomainError> {
         let mut epoch = self.ledger.epoch()?;
         epoch.number = proposal.to_epoch;
@@ -106,15 +121,18 @@ fn append_vote_event(
     ledger.append(entry)
 }
 
+/// Read-only use case that collects the constitution, epoch, and ledger entries.
 pub struct GetLedgerSnapshot {
     ledger: Arc<dyn LedgerPort>,
 }
 
 impl GetLedgerSnapshot {
+    /// Creates the snapshot query for the supplied ledger port.
     pub fn new(ledger: Arc<dyn LedgerPort>) -> Self {
         Self { ledger }
     }
 
+    /// Reads the current ledger data into a serializable snapshot value.
     pub fn execute(&self) -> Result<LedgerSnapshot, DomainError> {
         Ok(LedgerSnapshot {
             constitution_json: self.ledger.constitution()?.to_json(),
@@ -125,13 +143,18 @@ impl GetLedgerSnapshot {
 }
 
 #[derive(Debug, Clone)]
+/// Serialized ledger components returned by [`GetLedgerSnapshot`].
 pub struct LedgerSnapshot {
+    /// Constitution JSON produced by the domain type.
     pub constitution_json: String,
+    /// Epoch JSON produced by the domain type.
     pub epoch_json: String,
+    /// Ordered ledger entries returned by the persistence port.
     pub entries: Vec<vault_domain::LedgerEntry>,
 }
 
 impl LedgerSnapshot {
+    /// Encodes this snapshot as a JSON object containing constitution, epoch, and entries.
     pub fn to_json(&self) -> String {
         let entries = self.entries.iter().map(|e| e.to_json()).collect::<Vec<_>>().join(",");
         format!(r#"{{"constitution":{},"epoch":{},"entries":[{}]}}"#, self.constitution_json, self.epoch_json, entries)

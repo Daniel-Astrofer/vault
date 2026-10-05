@@ -23,25 +23,35 @@ use crate::domain::DomainError;
 /// Result of an in-process N-party FROST DKG (each logical participant holds
 /// only its own key package; group secret never assembled).
 pub struct FrostDistributedBundle {
+    /// Secret signing package for each logical participant identifier.
     pub key_packages: BTreeMap<Identifier, KeyPackage>,
+    /// Shared public package and group verifying key.
     pub pubkey_package: PublicKeyPackage,
+    /// Total logical participant count used for this DKG.
     pub max_signers: u16,
+    /// Threshold required for signatures from this DKG.
     pub min_signers: u16,
 }
 
+/// Adapter for dealerless FROST DKG operations and share persistence.
 pub struct DistributedDkgAdapter;
 
 impl DistributedDkgAdapter {
+    /// Creates the stateless distributed DKG adapter.
     pub fn new() -> Self {
         Self
     }
 
+    /// Always rejects a request to use single-party dealer key generation.
     pub fn refuse_dealer_attempt() -> Result<(), DomainError> {
         Err(DomainError::DealerForbidden("distributed DKG only; dealer single-process is lab-only (ToB 2024)".into()))
     }
 
-    /// In-process multi-party FROST DKG simulation across `max_signers` logical
-    /// participants. **Does not** call `generate_with_dealer`.
+    /// Runs a dealerless DKG simulation for `max_signers` logical participants.
+    ///
+    /// This executes all logical participants inside one process; it does not
+    /// assemble the group secret or call dealer key generation. Use the wire
+    /// adapter to run participants in separate vault processes.
     ///
     /// After part3, verifies every `KeyPackage.min_signers()` and the group
     /// `PublicKeyPackage` threshold equal `min_signers` (ToB threshold inflation
@@ -53,7 +63,6 @@ impl DistributedDkgAdapter {
             )));
         }
 
-        let mut rng = OsRng;
         let identifiers: Vec<Identifier> = (1..=max_signers)
             .map(|i| {
                 Identifier::try_from(i).map_err(|e| DomainError::ThresholdError(format!("frost identifier {i}: {e}")))
@@ -64,7 +73,7 @@ impl DistributedDkgAdapter {
         let mut round1_secrets = BTreeMap::new();
         let mut round1_packages = BTreeMap::new();
         for id in &identifiers {
-            let (secret, package) = frost::keys::dkg::part1(*id, max_signers, min_signers, &mut rng)
+            let (secret, package) = frost::keys::dkg::part1(*id, max_signers, min_signers, OsRng)
                 .map_err(|e| DomainError::ThresholdError(format!("frost dkg part1: {e}")))?;
             round1_secrets.insert(*id, secret);
             round1_packages.insert(*id, package);
@@ -141,8 +150,12 @@ impl DistributedDkgAdapter {
         })
     }
 
-    /// Persist each participant's sealed key package bytes via `ShareStorePort`
-    /// (AEAD lab / TEE refuse in prod). Never writes via dealer helpers.
+    /// Persists each participant package and the common public package.
+    ///
+    /// Key packages are written under identifier-specific IDs and the public
+    /// package under a fixed ID. The share store must provide appropriate
+    /// sealing/access policy; an error may occur after earlier packages were
+    /// already written.
     pub fn persist_shares(
         bundle: &FrostDistributedBundle,
         share_store: &dyn ShareStorePort,
@@ -169,10 +182,12 @@ impl Default for DistributedDkgAdapter {
 }
 
 impl DkgPort for DistributedDkgAdapter {
+    /// Returns the application-facing DKG mode identifier.
     fn mode_name(&self) -> &'static str {
         "distributed"
     }
 
+    /// Reports that this adapter does not use dealer key generation.
     fn is_dealer(&self) -> bool {
         false
     }

@@ -8,7 +8,7 @@
 //! Off by default. When enabled, wiring seals the AEAD passphrase under a TPM-bound
 //! envelope (see [`super::share_tpm`]) **before** constructing this store.
 //! TPM ≠ SEV: disk-at-rest only; clear fallback is lab-only (`VAULT_SHARE_TPM_CLEAR_FALLBACK=1`).
-//! See `VAULT_MESH_PLAN.md` §3.1.
+//! See `docs/architecture/ARCHITECTURE_BOUNDARIES.md` and `docs/security/SECURE_BOOT_VAULT.md`.
 //!
 //! # AAD (#20)
 //! Ciphertext is bound to `share_id` via AEAD additional authenticated data so a
@@ -82,14 +82,14 @@ impl SeedKind {
     }
 }
 
-/// Build a standard share_id for a seed.
-///
-/// Format: `identity/{kind_label}/{node_id}`
+/// Builds a standard seed share ID as `identity/{kind_label}/{node_id}`.
 pub fn build_seed_share_id(kind: SeedKind, node_id: &str) -> String {
     format!("identity/{}/{}", kind.label(), node_id)
 }
 
-/// Build AAD for seed binding: `seed_id + node_id + key_epoch`.
+/// Builds versioned AAD binding a seed share ID, node ID, and key epoch.
+///
+/// Changing any input changes the authenticated associated data used by callers.
 pub fn build_seed_aad(share_id: &str, node_id: &str, key_epoch: u64) -> Vec<u8> {
     let mut aad = Vec::with_capacity(share_id.len() + node_id.len() + 24);
     aad.extend_from_slice(b"kerosene-vault-seed-aad-v1|");
@@ -101,50 +101,10 @@ pub fn build_seed_aad(share_id: &str, node_id: &str, key_epoch: u64) -> Vec<u8> 
     aad
 }
 
-/// Versioned envelope for persisted FROST shares.
+/// Filesystem share store using Argon2id key derivation and ChaCha20-Poly1305.
 ///
-/// Each share on disk carries a `format_version` and `suite_id` so that
-/// migration (e.g., classical → hybrid suite) can detect stale shares and
-/// re-encrypt atomically.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct ShareEnvelope {
-    pub format_version: u16,
-    pub suite_id: String,
-    pub share_id: String,
-    pub node_id: String,
-    pub key_epoch: String,
-    pub share_kind: String,
-    pub nonce_hex: String,
-    pub ciphertext_hex: String,
-    pub aad_hash_hex: String,
-}
-
-impl ShareEnvelope {
-    pub const CURRENT_FORMAT: u16 = 1;
-
-    pub fn new(suite_id: &str, share_id: &str, node_id: &str, key_epoch: &str, share_kind: &str) -> Self {
-        Self {
-            format_version: Self::CURRENT_FORMAT,
-            suite_id: suite_id.to_string(),
-            share_id: share_id.to_string(),
-            node_id: node_id.to_string(),
-            key_epoch: key_epoch.to_string(),
-            share_kind: share_kind.to_string(),
-            nonce_hex: String::new(),
-            ciphertext_hex: String::new(),
-            aad_hash_hex: String::new(),
-        }
-    }
-
-    pub fn to_bytes(&self) -> Vec<u8> {
-        serde_json::to_vec(self).unwrap_or_default()
-    }
-
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, DomainError> {
-        serde_json::from_slice(bytes).map_err(|e| DomainError::ShareStoreForbidden(format!("share envelope: {e}")))
-    }
-}
-
+/// This protects blobs at rest but does not provide a hardware root of trust or
+/// protect plaintext after decryption in process memory.
 pub struct AeadDiskShareStore {
     root: PathBuf,
     passphrase: SecretString,
@@ -152,10 +112,12 @@ pub struct AeadDiskShareStore {
 }
 
 impl AeadDiskShareStore {
+    /// Creates a disk store with a passphrase not marked as TPM-sealed.
     pub fn new(root: impl Into<PathBuf>, passphrase: impl Into<String>) -> Self {
         Self::with_tpm_seal(root, passphrase, false)
     }
 
+    /// Creates a disk store and records whether its passphrase came from TPM sealing.
     pub fn with_tpm_seal(root: impl Into<PathBuf>, passphrase: impl Into<String>, tpm_sealed_passphrase: bool) -> Self {
         Self { root: root.into(), passphrase: SecretString::from(passphrase.into()), tpm_sealed_passphrase }
     }
@@ -185,6 +147,7 @@ impl AeadDiskShareStore {
 }
 
 impl ShareStorePort for AeadDiskShareStore {
+    /// Returns the store label, including whether TPM sealed the passphrase.
     fn store_kind(&self) -> &'static str {
         if self.tpm_sealed_passphrase {
             "aead_disk_tpm"
@@ -193,6 +156,7 @@ impl ShareStorePort for AeadDiskShareStore {
         }
     }
 
+    /// Encrypts and atomically persists a share, binding the ciphertext to `share_id`.
     fn put_share(&self, share_id: &str, plaintext: &[u8]) -> Result<(), DomainError> {
         fs::create_dir_all(&self.root).map_err(|e| DomainError::ShareStoreForbidden(format!("mkdir: {e}")))?;
         let mut salt = [0u8; 16];
@@ -215,8 +179,9 @@ impl ShareStorePort for AeadDiskShareStore {
         atomic_write_fsync(&self.path_for(share_id), &out)
     }
 
+    /// Reads and authenticates a share blob using its ID as associated data.
     fn get_share(&self, share_id: &str) -> Result<Vec<u8>, DomainError> {
-        let bytes = fs::read(&self.path_for(share_id))
+        let bytes = fs::read(self.path_for(share_id))
             .map_err(|e| DomainError::ShareStoreForbidden(format!("read share: {e}")))?;
         if bytes.len() < 16 + 12 + 16 {
             return Err(DomainError::ShareStoreForbidden("share blob too short".into()));

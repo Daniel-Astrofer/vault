@@ -1,3 +1,12 @@
+<!--
+Kerosene documentation metadata
+status: review-required
+audience: internal
+owner: vault
+source_of_truth: vault
+last_reviewed: 2026-09-03
+-->
+
 # Local runtime material
 
 This directory is deliberately ignored by Git. It contains generated material

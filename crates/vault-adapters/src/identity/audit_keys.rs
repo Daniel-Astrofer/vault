@@ -20,10 +20,15 @@ pub struct MeshAuditKeyAllowlist {
 }
 
 impl MeshAuditKeyAllowlist {
+    /// Creates an allowlist with no configured public keys.
     pub fn empty() -> Self {
         Self::default()
     }
 
+    /// Builds an allowlist from key strings, trimming whitespace and lowercasing.
+    ///
+    /// Empty entries are skipped and duplicate values collapse. This constructor
+    /// normalizes strings but does not validate hexadecimal encoding or key length.
     pub fn from_hex_list<I, S>(keys: I) -> Self
     where
         I: IntoIterator<Item = S>,
@@ -39,8 +44,12 @@ impl MeshAuditKeyAllowlist {
         Self { pubkeys_hex }
     }
 
-    /// Load from `VAULT_AUDIT_PUBKEY_ALLOWLIST` (csv) and/or `VAULT_AUDIT_PUBKEYS_PATH`
-    /// (lines: `name hex` or bare `hex`).
+    /// Loads and merges keys from the audit allowlist environment variables.
+    ///
+    /// `VAULT_AUDIT_PUBKEY_ALLOWLIST` is comma-separated; the optional file path
+    /// accepts bare keys or `name hex` lines. Values are normalized but not
+    /// cryptographically validated. A configured file that cannot be read is an
+    /// authentication error.
     pub fn from_env() -> Result<Self, DomainError> {
         let mut keys = BTreeSet::new();
         if let Ok(csv) = std::env::var("VAULT_AUDIT_PUBKEY_ALLOWLIST") {
@@ -75,19 +84,25 @@ impl MeshAuditKeyAllowlist {
         Ok(())
     }
 
+    /// Reports whether the allowlist contains any normalized key strings.
     pub fn is_empty(&self) -> bool {
         self.pubkeys_hex.is_empty()
     }
 
+    /// Returns the number of unique normalized key strings.
     pub fn len(&self) -> usize {
         self.pubkeys_hex.len()
     }
 
+    /// Checks membership after trimming whitespace and lowercasing the input.
     pub fn contains(&self, pubkey_hex: &str) -> bool {
         self.pubkeys_hex.contains(&pubkey_hex.trim().to_ascii_lowercase())
     }
 
-    /// Verify-hook: reject keys not on the mesh audit allowlist.
+    /// Requires a key to be present in a non-empty mesh audit allowlist.
+    ///
+    /// This enforces membership only; callers remain responsible for verifying
+    /// the audit signature using the corresponding cryptographic key.
     pub fn require_allowlisted(&self, pubkey_hex: &str) -> Result<(), DomainError> {
         if self.is_empty() {
             return Err(DomainError::AuthRejected(
@@ -103,6 +118,7 @@ impl MeshAuditKeyAllowlist {
         Ok(())
     }
 
+    /// Iterates over normalized key strings in lexical order.
     pub fn iter(&self) -> impl Iterator<Item = &String> {
         self.pubkeys_hex.iter()
     }

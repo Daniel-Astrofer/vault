@@ -3,10 +3,11 @@
 # Emits flat paths (compose) + SPIFFE-like SVID tree. Lab ≠ go-live.
 #
 # Unique per-vault SPIFFE (recommended Gate path):
-#   VAULT_MTLS_NODE_IDS=vault-1,vault-2,vault-3 ./scripts/gen_lab_mtls_certs.sh
+#   VAULT_MTLS_NODE_IDS=vault-1,vault-2,vault-3 ./scripts/lab/gen_mtls_certs.sh
 # Shared lab alias (legacy visualize): omit VAULT_MTLS_NODE_IDS_UNIQUE=1
-# Ceremony profile: prefer ./scripts/gen_ceremony_mtls_certs.sh
+# Ceremony profile: prefer ./scripts/ceremony/gen_mtls_certs.sh
 set -euo pipefail
+umask 077
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -102,7 +103,7 @@ cat <<EOF
   #   kfe.vaultmesh.tls.cert-path=$OUT_DIR/vault-client.crt
   #   kfe.vaultmesh.tls.key-path=$OUT_DIR/vault-client.pkcs8.key
   #   kfe.vaultmesh.tls.ca-path=$OUT_DIR/ca.crt
-  # Ceremony CA (unique SPIFFE + short TTL): ./scripts/gen_ceremony_mtls_certs.sh
+  # Ceremony CA (unique SPIFFE + short TTL): ./scripts/ceremony/gen_mtls_certs.sh
   # SPIFFE-like: $OUT_DIR/spiffe/ (see docs/MTLS_SPIFFE_LAYOUT.md)
 Lab mTLS materials written to $OUT_DIR (not for mainnet).
 EOF

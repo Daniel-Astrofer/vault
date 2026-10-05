@@ -26,8 +26,12 @@ fn json_err(e: impl std::fmt::Display) -> String {
 }
 
 async fn security_headers_mw(request: Request, next: Next) -> Response {
+    let json_response = request.uri().path() != "/v1/metrics";
     let mut resp = next.run(request).await;
     let headers = resp.headers_mut();
+    if json_response {
+        headers.insert(axum::http::header::CONTENT_TYPE, axum::http::HeaderValue::from_static("application/json"));
+    }
     headers.insert(
         axum::http::header::HeaderName::from_static("x-content-type-options"),
         axum::http::HeaderValue::from_static("nosniff"),
@@ -44,12 +48,28 @@ async fn security_headers_mw(request: Request, next: Next) -> Response {
 }
 
 #[derive(Clone)]
+/// Shared application state injected into public and authenticated routes.
 pub struct AppState {
+    /// Fully initialized runtime providing use cases, adapters, and config.
     pub runtime: Arc<VaultRuntime>,
+    /// Rate limiter for authenticated API requests.
     pub auth_limiter: Arc<SlidingWindowLimiter>,
+    /// Stricter rate limiter for resource-sensitive prepare operations.
     pub prepare_limiter: Arc<SlidingWindowLimiter>,
 }
 
+#[derive(Clone, Copy)]
+enum DkgKind {
+    Plain,
+    TaprootUsers,
+    TaprootChannels,
+}
+
+/// Builds the public HTTP router and its authenticated route group.
+///
+/// Public liveness, health, and metrics routes are combined with protected
+/// operations that require an mTLS identity and role authorization. The router
+/// also applies a request body limit and standard response security headers.
 pub fn build_router(runtime: Arc<VaultRuntime>) -> Router {
     let state = AppState {
         runtime: runtime.clone(),
@@ -75,6 +95,10 @@ pub fn build_router(runtime: Arc<VaultRuntime>) -> Router {
         .route("/v1/dkg/tr/round2", post(v1_dkg_tr_round2))
         .route("/v1/dkg/tr/round3", post(v1_dkg_tr_round3))
         .route("/v1/dkg/tr/status", get(v1_dkg_tr_status))
+        .route("/v1/dkg/tr/channels/round1", post(v1_dkg_tr_channels_round1))
+        .route("/v1/dkg/tr/channels/round2", post(v1_dkg_tr_channels_round2))
+        .route("/v1/dkg/tr/channels/round3", post(v1_dkg_tr_channels_round3))
+        .route("/v1/dkg/tr/channels/status", get(v1_dkg_tr_channels_status))
         // Item 1.5: Wire-based Taproot FROST reshare routes
         .route("/v1/reshare/tr/round1", post(v1_reshare_tr_round1))
         .route("/v1/reshare/tr/round2", post(v1_reshare_tr_round2))
@@ -88,9 +112,12 @@ pub fn build_router(runtime: Arc<VaultRuntime>) -> Router {
         .route("/v1/reshare/trigger", post(v1_reshare_trigger))
         .route("/v1/frost/tr/commit", post(v1_frost_tr_commit))
         .route("/v1/frost/tr/sign-share", post(v1_frost_tr_sign_share))
+        .route("/v1/frost/tr/channels/commit", post(v1_frost_tr_channels_commit))
+        .route("/v1/frost/tr/channels/sign-share", post(v1_frost_tr_channels_sign_share))
         .route_layer(from_fn_with_state(state.clone(), require_mtls_identity_mw));
 
     Router::new()
+        .route("/v1/live", get(v1_live))
         .route("/v1/health", get(v1_health))
         .route("/v1/metrics", get(v1_metrics))
         .route("/", get(v1_health))
@@ -149,6 +176,10 @@ async fn require_mtls_identity_mw(
 
     request.extensions_mut().insert(principal);
     Ok(next.run(request).await)
+}
+
+async fn v1_live() -> impl IntoResponse {
+    (StatusCode::OK, r#"{"live":true}"#)
 }
 
 async fn v1_health(State(state): State<AppState>) -> impl IntoResponse {
@@ -639,7 +670,7 @@ async fn v1_frost_tr_commit(State(state): State<AppState>, body: Bytes) -> impl 
         Err(e) => return (StatusCode::BAD_REQUEST, json_err(format!("invalid json: {e}"))),
     };
     match state.runtime.tr_cosign_peer.handle_commit(&req) {
-        Ok(resp) => (StatusCode::OK, serde_json::to_string(&resp).unwrap_or_else(|e| json_err(e))),
+        Ok(resp) => (StatusCode::OK, serde_json::to_string(&resp).unwrap_or_else(json_err)),
         Err(e) => (StatusCode::BAD_REQUEST, json_err(e)),
     }
 }
@@ -650,7 +681,30 @@ async fn v1_frost_tr_sign_share(State(state): State<AppState>, body: Bytes) -> i
         Err(e) => return (StatusCode::BAD_REQUEST, json_err(format!("invalid json: {e}"))),
     };
     match state.runtime.tr_cosign_peer.handle_sign_share(&req) {
-        Ok(Some(resp)) => (StatusCode::OK, serde_json::to_string(&resp).unwrap_or_else(|e| json_err(e))),
+        Ok(Some(resp)) => (StatusCode::OK, serde_json::to_string(&resp).unwrap_or_else(json_err)),
+        Ok(None) => (StatusCode::OK, r#"{"skipped":true,"reason":"not in signing set"}"#.into()),
+        Err(e) => (StatusCode::BAD_REQUEST, json_err(e)),
+    }
+}
+
+async fn v1_frost_tr_channels_commit(State(state): State<AppState>, body: Bytes) -> impl IntoResponse {
+    let req: crate::adapters::TrCommitRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => return (StatusCode::BAD_REQUEST, json_err(format!("invalid json: {e}"))),
+    };
+    match state.runtime.tr_channels_cosign_peer.handle_commit(&req) {
+        Ok(resp) => (StatusCode::OK, serde_json::to_string(&resp).unwrap_or_else(json_err)),
+        Err(e) => (StatusCode::BAD_REQUEST, json_err(e)),
+    }
+}
+
+async fn v1_frost_tr_channels_sign_share(State(state): State<AppState>, body: Bytes) -> impl IntoResponse {
+    let req: crate::adapters::TrSignShareRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => return (StatusCode::BAD_REQUEST, json_err(format!("invalid json: {e}"))),
+    };
+    match state.runtime.tr_channels_cosign_peer.handle_sign_share(&req) {
+        Ok(Some(resp)) => (StatusCode::OK, serde_json::to_string(&resp).unwrap_or_else(json_err)),
         Ok(None) => (StatusCode::OK, r#"{"skipped":true,"reason":"not in signing set"}"#.into()),
         Err(e) => (StatusCode::BAD_REQUEST, json_err(e)),
     }
@@ -664,7 +718,7 @@ async fn v1_dkg_round1(
     Extension(principal): Extension<crate::adapters::MeshPrincipal>,
     body: Bytes,
 ) -> impl IntoResponse {
-    dkg_round1_impl(state, principal, body, false).await
+    dkg_round1_impl(state, principal, body, DkgKind::Plain).await
 }
 
 async fn v1_dkg_tr_round1(
@@ -672,14 +726,22 @@ async fn v1_dkg_tr_round1(
     Extension(principal): Extension<crate::adapters::MeshPrincipal>,
     body: Bytes,
 ) -> impl IntoResponse {
-    dkg_round1_impl(state, principal, body, true).await
+    dkg_round1_impl(state, principal, body, DkgKind::TaprootUsers).await
+}
+
+async fn v1_dkg_tr_channels_round1(
+    State(state): State<AppState>,
+    Extension(principal): Extension<crate::adapters::MeshPrincipal>,
+    body: Bytes,
+) -> impl IntoResponse {
+    dkg_round1_impl(state, principal, body, DkgKind::TaprootChannels).await
 }
 
 async fn dkg_round1_impl(
     state: AppState,
     principal: crate::adapters::MeshPrincipal,
     body: Bytes,
-    taproot: bool,
+    kind: DkgKind,
 ) -> (StatusCode, String) {
     #[derive(serde::Deserialize)]
     struct Round1Body {
@@ -752,15 +814,18 @@ async fn dkg_round1_impl(
             min_signers: min,
             roster,
         };
-        let start_result =
-            if taproot { state.runtime.tr_wire_dkg.start(start) } else { state.runtime.wire_dkg.start(start) };
+        let start_result = match kind {
+            DkgKind::Plain => state.runtime.wire_dkg.start(start),
+            DkgKind::TaprootUsers => state.runtime.tr_wire_dkg.start(start),
+            DkgKind::TaprootChannels => state.runtime.tr_channels_wire_dkg.start(start),
+        };
         return match start_result {
             Ok((status, wire)) => {
                 if req.fanout {
-                    let fanout = if taproot {
-                        state.runtime.tr_wire_dkg.fanout_round1(&wire).await
-                    } else {
-                        state.runtime.wire_dkg.fanout_round1(&wire).await
+                    let fanout = match kind {
+                        DkgKind::Plain => state.runtime.wire_dkg.fanout_round1(&wire).await,
+                        DkgKind::TaprootUsers => state.runtime.tr_wire_dkg.fanout_round1(&wire).await,
+                        DkgKind::TaprootChannels => state.runtime.tr_channels_wire_dkg.fanout_round1(&wire).await,
                     };
                     if let Err(e) = fanout {
                         return (
@@ -806,10 +871,13 @@ async fn dkg_round1_impl(
         package_hex,
         envelope: None,
     };
-    let result =
-        if taproot { state.runtime.tr_wire_dkg.ingest_round1(msg) } else { state.runtime.wire_dkg.ingest_round1(msg) };
+    let result = match kind {
+        DkgKind::Plain => state.runtime.wire_dkg.ingest_round1(msg),
+        DkgKind::TaprootUsers => state.runtime.tr_wire_dkg.ingest_round1(msg),
+        DkgKind::TaprootChannels => state.runtime.tr_channels_wire_dkg.ingest_round1(msg),
+    };
     match result {
-        Ok(status) => (StatusCode::OK, serde_json::to_string(&status).unwrap_or_else(|e| json_err(e))),
+        Ok(status) => (StatusCode::OK, serde_json::to_string(&status).unwrap_or_else(json_err)),
         Err(e) => (StatusCode::BAD_REQUEST, json_err(e)),
     }
 }
@@ -820,7 +888,7 @@ async fn v1_dkg_round2(
     Extension(principal): Extension<crate::adapters::MeshPrincipal>,
     body: Bytes,
 ) -> impl IntoResponse {
-    dkg_round2_impl(state, principal, body, false).await
+    dkg_round2_impl(state, principal, body, DkgKind::Plain).await
 }
 
 async fn v1_dkg_tr_round2(
@@ -828,14 +896,22 @@ async fn v1_dkg_tr_round2(
     Extension(principal): Extension<crate::adapters::MeshPrincipal>,
     body: Bytes,
 ) -> impl IntoResponse {
-    dkg_round2_impl(state, principal, body, true).await
+    dkg_round2_impl(state, principal, body, DkgKind::TaprootUsers).await
+}
+
+async fn v1_dkg_tr_channels_round2(
+    State(state): State<AppState>,
+    Extension(principal): Extension<crate::adapters::MeshPrincipal>,
+    body: Bytes,
+) -> impl IntoResponse {
+    dkg_round2_impl(state, principal, body, DkgKind::TaprootChannels).await
 }
 
 async fn dkg_round2_impl(
     state: AppState,
     principal: crate::adapters::MeshPrincipal,
     body: Bytes,
-    taproot: bool,
+    kind: DkgKind,
 ) -> (StatusCode, String) {
     #[derive(serde::Deserialize)]
     struct Round2Body {
@@ -863,18 +939,18 @@ async fn dkg_round2_impl(
     };
 
     if req.deliver {
-        let outbound = if taproot {
-            state.runtime.tr_wire_dkg.take_round2_outbound(&req.session_id)
-        } else {
-            state.runtime.wire_dkg.take_round2_outbound(&req.session_id)
+        let outbound = match kind {
+            DkgKind::Plain => state.runtime.wire_dkg.take_round2_outbound(&req.session_id),
+            DkgKind::TaprootUsers => state.runtime.tr_wire_dkg.take_round2_outbound(&req.session_id),
+            DkgKind::TaprootChannels => state.runtime.tr_channels_wire_dkg.take_round2_outbound(&req.session_id),
         };
         match outbound {
             Ok(msgs) => {
                 if req.fanout {
-                    let fanout = if taproot {
-                        state.runtime.tr_wire_dkg.fanout_round2(&msgs).await
-                    } else {
-                        state.runtime.wire_dkg.fanout_round2(&msgs).await
+                    let fanout = match kind {
+                        DkgKind::Plain => state.runtime.wire_dkg.fanout_round2(&msgs).await,
+                        DkgKind::TaprootUsers => state.runtime.tr_wire_dkg.fanout_round2(&msgs).await,
+                        DkgKind::TaprootChannels => state.runtime.tr_channels_wire_dkg.fanout_round2(&msgs).await,
                     };
                     if let Err(e) = fanout {
                         return (StatusCode::BAD_GATEWAY, json_err(e));
@@ -905,13 +981,13 @@ async fn dkg_round2_impl(
             package_hex,
             envelope: None,
         };
-        let result = if taproot {
-            state.runtime.tr_wire_dkg.ingest_round2(msg)
-        } else {
-            state.runtime.wire_dkg.ingest_round2(msg)
+        let result = match kind {
+            DkgKind::Plain => state.runtime.wire_dkg.ingest_round2(msg),
+            DkgKind::TaprootUsers => state.runtime.tr_wire_dkg.ingest_round2(msg),
+            DkgKind::TaprootChannels => state.runtime.tr_channels_wire_dkg.ingest_round2(msg),
         };
         match result {
-            Ok(status) => (StatusCode::OK, serde_json::to_string(&status).unwrap_or_else(|e| json_err(e))),
+            Ok(status) => (StatusCode::OK, serde_json::to_string(&status).unwrap_or_else(json_err)),
             Err(e) => (StatusCode::BAD_REQUEST, json_err(e)),
         }
     }
@@ -919,36 +995,44 @@ async fn dkg_round2_impl(
 
 /// Round3: finalize part3 when round2 inbox is complete; persists only local share.
 async fn v1_dkg_round3(State(state): State<AppState>, body: Bytes) -> impl IntoResponse {
-    dkg_round3_impl(state, body, false).await
+    dkg_round3_impl(state, body, DkgKind::Plain).await
 }
 
 async fn v1_dkg_tr_round3(State(state): State<AppState>, body: Bytes) -> impl IntoResponse {
-    dkg_round3_impl(state, body, true).await
+    dkg_round3_impl(state, body, DkgKind::TaprootUsers).await
 }
 
-async fn dkg_round3_impl(state: AppState, body: Bytes, taproot: bool) -> (StatusCode, String) {
+async fn v1_dkg_tr_channels_round3(State(state): State<AppState>, body: Bytes) -> impl IntoResponse {
+    dkg_round3_impl(state, body, DkgKind::TaprootChannels).await
+}
+
+async fn dkg_round3_impl(state: AppState, body: Bytes, kind: DkgKind) -> (StatusCode, String) {
     let req: crate::adapters::Round3WireRequest = match serde_json::from_slice(&body) {
         Ok(r) => r,
         Err(e) => return (StatusCode::BAD_REQUEST, json_err(format!("invalid json: {e}"))),
     };
     if !req.finalize {
-        let status = if taproot {
-            state.runtime.tr_wire_dkg.status(&req.session_id)
-        } else {
-            state.runtime.wire_dkg.status(&req.session_id)
+        let status = match kind {
+            DkgKind::Plain => state.runtime.wire_dkg.status(&req.session_id),
+            DkgKind::TaprootUsers => state.runtime.tr_wire_dkg.status(&req.session_id),
+            DkgKind::TaprootChannels => state.runtime.tr_channels_wire_dkg.status(&req.session_id),
         };
         return match status {
-            Ok(status) => (StatusCode::OK, serde_json::to_string(&status).unwrap_or_else(|e| json_err(e))),
+            Ok(status) => (StatusCode::OK, serde_json::to_string(&status).unwrap_or_else(json_err)),
             Err(e) => (StatusCode::BAD_REQUEST, json_err(e)),
         };
     }
-    let result = if taproot {
-        state.runtime.tr_wire_dkg.finalize_round3(&req.session_id, state.runtime.share_store.as_ref())
-    } else {
-        state.runtime.wire_dkg.finalize_round3(&req.session_id, state.runtime.share_store.as_ref())
+    let result = match kind {
+        DkgKind::Plain => state.runtime.wire_dkg.finalize_round3(&req.session_id, state.runtime.share_store.as_ref()),
+        DkgKind::TaprootUsers => {
+            state.runtime.tr_wire_dkg.finalize_round3(&req.session_id, state.runtime.share_store.as_ref())
+        }
+        DkgKind::TaprootChannels => {
+            state.runtime.tr_channels_wire_dkg.finalize_round3(&req.session_id, state.runtime.share_store.as_ref())
+        }
     };
     match result {
-        Ok(status) => (StatusCode::OK, serde_json::to_string(&status).unwrap_or_else(|e| json_err(e))),
+        Ok(status) => (StatusCode::OK, serde_json::to_string(&status).unwrap_or_else(json_err)),
         Err(e) => (StatusCode::BAD_REQUEST, json_err(e)),
     }
 }
@@ -957,28 +1041,38 @@ async fn v1_dkg_status(
     State(state): State<AppState>,
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
-    dkg_status_impl(state, q, false).await
+    dkg_status_impl(state, q, DkgKind::Plain).await
 }
 
 async fn v1_dkg_tr_status(
     State(state): State<AppState>,
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
-    dkg_status_impl(state, q, true).await
+    dkg_status_impl(state, q, DkgKind::TaprootUsers).await
+}
+
+async fn v1_dkg_tr_channels_status(
+    State(state): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    dkg_status_impl(state, q, DkgKind::TaprootChannels).await
 }
 
 async fn dkg_status_impl(
     state: AppState,
     q: std::collections::HashMap<String, String>,
-    taproot: bool,
+    kind: DkgKind,
 ) -> (StatusCode, String) {
     let Some(session_id) = q.get("session_id") else {
         return (StatusCode::BAD_REQUEST, r#"{"error":"session_id query required"}"#.into());
     };
-    let status =
-        if taproot { state.runtime.tr_wire_dkg.status(session_id) } else { state.runtime.wire_dkg.status(session_id) };
+    let status = match kind {
+        DkgKind::Plain => state.runtime.wire_dkg.status(session_id),
+        DkgKind::TaprootUsers => state.runtime.tr_wire_dkg.status(session_id),
+        DkgKind::TaprootChannels => state.runtime.tr_channels_wire_dkg.status(session_id),
+    };
     match status {
-        Ok(status) => (StatusCode::OK, serde_json::to_string(&status).unwrap_or_else(|e| json_err(e))),
+        Ok(status) => (StatusCode::OK, serde_json::to_string(&status).unwrap_or_else(json_err)),
         Err(e) => (StatusCode::BAD_REQUEST, json_err(e)),
     }
 }

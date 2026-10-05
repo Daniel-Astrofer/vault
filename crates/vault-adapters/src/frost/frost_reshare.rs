@@ -21,8 +21,11 @@ use crate::{
 /// Live FROST material shared between sign orchestrator and reshare hook.
 #[derive(Clone)]
 pub struct FrostShareState {
+    /// Secret signing packages indexed by participant identifier.
     pub key_packages: BTreeMap<Identifier, KeyPackage>,
+    /// Public package containing the group's shared verifying key.
     pub pubkey_package: PublicKeyPackage,
+    /// Minimum signer count required by these packages.
     pub min_signers: usize,
 }
 
@@ -32,14 +35,17 @@ pub struct FrostShareSlot {
 }
 
 impl FrostShareSlot {
+    /// Creates an empty slot that can receive post-DKG material.
     pub fn new() -> Self {
         Self { inner: Mutex::new(None) }
     }
 
+    /// Installs or replaces the current FROST share state.
     pub fn install(&self, state: FrostShareState) {
         *self.inner.lock().expect("frost share slot") = Some(state);
     }
 
+    /// Returns a clone of the installed state or an error when the slot is empty.
     pub fn snapshot(&self) -> Result<FrostShareState, DomainError> {
         self.inner
             .lock()
@@ -48,6 +54,7 @@ impl FrostShareSlot {
             .ok_or_else(|| DomainError::ThresholdError("FROST material not installed".into()))
     }
 
+    /// Replaces the installed state after a successful refresh.
     pub fn replace(&self, state: FrostShareState) {
         *self.inner.lock().expect("frost share slot") = Some(state);
     }
@@ -59,7 +66,12 @@ impl Default for FrostShareSlot {
     }
 }
 
-/// Multi-round FROST refresh DKG across all installed participants (n-party sim).
+/// Refreshes all supplied FROST shares using an in-process multi-round simulation.
+///
+/// The participant set and threshold come from the existing packages. New
+/// signing shares are generated while the shared verifying key and threshold
+/// must remain unchanged. This helper assembles all participants locally and
+/// is therefore suitable only where in-process N-share handling is permitted.
 pub fn refresh_shares_in_process(
     old_key_packages: &BTreeMap<Identifier, KeyPackage>,
     old_pubkey: &PublicKeyPackage,
@@ -78,13 +90,11 @@ pub fn refresh_shares_in_process(
         return Err(DomainError::ThresholdError(format!("bad reshare params: max={max_signers} min={min_signers}")));
     }
 
-    let mut rng = OsRng;
-
     // --- Round 1 ---
     let mut round1_secrets = BTreeMap::new();
     let mut round1_packages = BTreeMap::new();
     for id in &identifiers {
-        let (secret, package) = refresh_dkg_part1(*id, max_signers, min_signers, &mut rng)
+        let (secret, package) = refresh_dkg_part1(*id, max_signers, min_signers, OsRng)
             .map_err(|e| DomainError::ThresholdError(format!("frost refresh part1: {e}")))?;
         round1_secrets.insert(*id, secret);
         round1_packages.insert(*id, package);
@@ -173,6 +183,10 @@ pub struct PolicyReshareHook {
 }
 
 impl PolicyReshareHook {
+    /// Creates a policy hook with optional key sets and governance integration unset.
+    ///
+    /// In-process N-share refresh defaults to the `dealer_lab` feature setting;
+    /// distributed deployments should disable it and use a wire refresh flow.
     pub fn new(
         policy: ResharePolicy,
         ledger: Arc<dyn LedgerPort>,
@@ -194,21 +208,25 @@ impl PolicyReshareHook {
         }
     }
 
+    /// Adds an optional dedicated CHANNELS Taproot share slot to refresh.
     pub fn with_channels_tr_shares(mut self, shares: Arc<FrostTrShareSlot>) -> Self {
         self.tr_channels_shares = Some(shares);
         self
     }
 
+    /// Enables or disables local N-share refresh for this hook.
     pub fn with_allow_in_process_nshare_reshare(mut self, allow: bool) -> Self {
         self.allow_in_process_nshare_reshare = allow;
         self
     }
 
+    /// Configures persistence for refreshed USERS and CHANNELS Taproot shares.
     pub fn with_share_store(mut self, store: Arc<dyn ShareStorePort>) -> Self {
         self.share_store = Some(store);
         self
     }
 
+    /// Configures governance work accrual after day advances or reshares.
     pub fn with_governance(mut self, governance: Arc<AccrueGovernanceWork>) -> Self {
         self.governance = Some(governance);
         self
@@ -410,10 +428,15 @@ impl PolicyReshareHook {
 }
 
 impl ReshareHookPort for PolicyReshareHook {
+    /// Returns the configured daily or manual refresh policy.
     fn policy(&self) -> ResharePolicy {
         self.policy
     }
 
+    /// Records a day transition, accrues governance work, and applies its refresh policy.
+    ///
+    /// Daily policy refreshes the FROST keys; manual policy records the day event
+    /// but leaves key refresh for an explicit operator trigger.
     fn on_day_advance(&self, from: &DayEpoch, to: &DayEpoch, participants: &[NodeId]) -> Result<(), DomainError> {
         self.record_day_advanced(from, to)?;
         let rewarded = self.reward_participants(participants)?;
@@ -424,6 +447,7 @@ impl ReshareHookPort for PolicyReshareHook {
         }
     }
 
+    /// Runs a manual in-process refresh using the supplied reason for ledger records.
     fn trigger_manual(&self, reason: &str) -> Result<(), DomainError> {
         self.run_reshare(reason, None, None, &[])
     }
@@ -433,7 +457,9 @@ impl ReshareHookPort for PolicyReshareHook {
 mod tests {
     use super::*;
     use crate::adapters::DistributedDkgAdapter;
+    #[cfg(feature = "dealer_lab")]
     use crate::adapters::InMemoryLedger;
+    #[cfg(feature = "dealer_lab")]
     use crate::domain::Constitution;
 
     #[test]

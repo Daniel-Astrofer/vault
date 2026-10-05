@@ -13,13 +13,18 @@ use serde::Deserialize;
 use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Deployment ceremony profile controlling allowed security features.
 pub enum CeremonyMode {
+    /// Local development and explicitly lab-only settings.
     Lab,
+    /// Pre-production validation with production-like authentication requirements.
     Staging,
+    /// Hardened production ceremony.
     Production,
 }
 
 impl CeremonyMode {
+    /// Parses a ceremony mode name, accepting `prod` as a production alias.
     pub fn parse(raw: &str) -> Option<Self> {
         match raw.trim().to_ascii_lowercase().as_str() {
             "lab" => Some(Self::Lab),
@@ -29,6 +34,7 @@ impl CeremonyMode {
         }
     }
 
+    /// Returns the canonical lowercase profile name.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Lab => "lab",
@@ -39,12 +45,16 @@ impl CeremonyMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// API authentication mechanism selected for the Vault service.
 pub enum AuthMode {
+    /// Static shared token authentication, restricted to lab configurations.
     StaticToken,
+    /// Mutual TLS identity authentication.
     MutualTls,
 }
 
 impl AuthMode {
+    /// Parses token and mTLS aliases, ignoring case and surrounding whitespace.
     pub fn parse(raw: &str) -> Option<Self> {
         match raw.trim().to_ascii_lowercase().as_str() {
             "static" | "token" | "static_token" => Some(Self::StaticToken),
@@ -53,6 +63,7 @@ impl AuthMode {
         }
     }
 
+    /// Returns the canonical configuration label.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::StaticToken => "static_token",
@@ -62,8 +73,11 @@ impl AuthMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Persistence and protection strategy for secret shares.
 pub enum ShareStoreMode {
+    /// Host-disk AEAD store using a passphrase-derived encryption key.
     AeadDisk,
+    /// TEE-backed seal store that fails closed when no supported hardware path exists.
     TeeSeal,
 }
 
@@ -79,6 +93,7 @@ pub enum DkgMode {
 }
 
 impl DkgMode {
+    /// Parses supported dealer, in-process distributed, and wire DKG aliases.
     pub fn parse(raw: &str) -> Option<Self> {
         match raw.trim().to_ascii_lowercase().as_str() {
             "dealer" | "dealer_lab" => Some(Self::DealerLab),
@@ -88,6 +103,7 @@ impl DkgMode {
         }
     }
 
+    /// Returns the canonical DKG mode name.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::DealerLab => "dealer_lab",
@@ -96,12 +112,14 @@ impl DkgMode {
         }
     }
 
+    /// Reports whether this mode uses dealerless distributed key generation.
     pub fn is_distributed(self) -> bool {
         matches!(self, Self::Distributed | Self::DistributedWire)
     }
 }
 
 impl ShareStoreMode {
+    /// Parses the AEAD disk and TEE-seal mode aliases.
     pub fn parse(raw: &str) -> Option<Self> {
         match raw.trim().to_ascii_lowercase().as_str() {
             "aead" | "disk" | "aead_disk" => Some(Self::AeadDisk),
@@ -110,6 +128,7 @@ impl ShareStoreMode {
         }
     }
 
+    /// Returns the canonical share-store mode name.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::AeadDisk => "aead_disk",
@@ -119,15 +138,21 @@ impl ShareStoreMode {
 }
 
 #[derive(Debug, Clone)]
+/// Validated runtime configuration assembled from environment variables.
 pub struct VaultConfig {
+    /// Stable identifier for this Vault node.
     pub node_id: NodeId,
     /// Honest hardware tier (`domestic` | `sev` | `sgx`).
     pub node_tier: VaultNodeTier,
     /// True when a TEE guest/enclave device node is present (not the same as TPM).
     pub tee_available: bool,
+    /// Attestation mechanism used by this node.
     pub attestation_mode: AttestationMode,
+    /// Local network socket address used by the service listener.
     pub listen_addr: String,
+    /// Attestation root material; must be explicitly configured outside lab.
     pub lab_root: String,
+    /// Configured seed peer ID and endpoint pairs.
     pub seed_peers: Vec<(String, String)>,
     /// Optional per-peer tier overlay (`VAULT_PEER_TIERS=id=sev,...`); default domestic.
     pub peer_tiers: BTreeMap<String, VaultNodeTier>,
@@ -136,6 +161,7 @@ pub struct VaultConfig {
     pub peer_tier_quotes: BTreeMap<String, String>,
     /// When true (default outside lab), TEE peer tiers without quotes are seated as domestic.
     pub peer_tier_require_quote: bool,
+    /// Whether simulation attestation modes are rejected.
     pub refuse_sim: bool,
     /// Explicit genesis n; defaults to len(local+seeds) when unset.
     pub genesis_n: Option<usize>,
@@ -158,6 +184,7 @@ pub struct VaultConfig {
     pub hardened: bool,
     /// Staging-only TEE stub quotes (never for production ceremony).
     pub attestation_staging_stub: bool,
+    /// Ceremony profile used to enforce production/staging hygiene.
     pub ceremony_mode: CeremonyMode,
     /// `VAULT_ECONOMY=open` enables live p%=1% miner splits (F9); default lab dry-run.
     pub open_economy: bool,
@@ -169,8 +196,11 @@ pub struct VaultConfig {
     /// `VAULT_SEATING_POLICY` — TEE admission timeout in hours for post-genesis seating.
     /// After timeout, domestic nodes may be admitted as fallback. Default: 24h.
     pub seating_policy_timeout_hours: u64,
+    /// Bitcoin network used for addresses and transaction validation.
     pub bitcoin_network: BitcoinNetwork,
+    /// API authentication mode.
     pub auth_mode: AuthMode,
+    /// Optional legacy token value; production mTLS configuration leaves this unset.
     pub vault_token: Option<String>,
     /// Explicit USERS withdraw destinations (`VAULT_USERS_DESTINATION_ALLOWLIST`, comma-separated).
     /// Soft "any parseable address" is refused — destinations must be listed here and/or lab defaults.
@@ -196,7 +226,9 @@ pub struct VaultConfig {
     pub tls_verify_policy: TlsPeerVerifyPolicy,
     /// F8 mesh audit pubkey allowlist (≠ release ≠ settlement). See `docs/AUDIT_KEYS.md`.
     pub audit_key_allowlist: MeshAuditKeyAllowlist,
+    /// Selected secret-share storage backend.
     pub share_store_mode: ShareStoreMode,
+    /// Optional passphrase used by disk AEAD storage.
     pub share_passphrase: Option<String>,
     /// Wrap AEAD passphrase with TPM seal (`VAULT_SHARE_TPM_SEAL=1`). Off by default.
     pub share_tpm_seal: bool,
@@ -236,6 +268,10 @@ pub struct VaultConfig {
 }
 
 impl VaultConfig {
+    /// Loads environment variables, applies production defaults, and validates security hygiene.
+    ///
+    /// Missing required identity/root settings and forbidden legacy or lab-only
+    /// flags return configuration errors instead of silently weakening policy.
     pub fn from_env() -> Result<Self, DomainError> {
         let node_id = NodeId::new(
             std::env::var("VAULT_NODE_ID")
@@ -591,6 +627,7 @@ impl VaultConfig {
         Ok(cfg)
     }
 
+    /// Builds the domain reward configuration from the two configured reward values.
     pub fn governance_reward_config(&self) -> GovernanceRewardConfig {
         GovernanceRewardConfig {
             reward_sats: self.governance_reward_sats,
@@ -598,6 +635,7 @@ impl VaultConfig {
         }
     }
 
+    /// Rejects laboratory attestation modes when simulation is forbidden.
     pub fn validate_attestation_policy(&self) -> Result<(), DomainError> {
         if self.refuse_sim && self.attestation_mode.is_lab_only() {
             return Err(DomainError::SimAttestationForbidden);
@@ -607,6 +645,7 @@ impl VaultConfig {
 
     /// Prod/staging refuse: sim, lab timelock env, dealer, static token, fake TEE claims.
     /// Domestic AEAD + software attestation is allowed; staging stub and sev-without-HW are not.
+    /// Validates the combined attestation, ceremony, DKG, storage, auth, and network policy.
     pub fn validate_hygiene(&self) -> Result<(), DomainError> {
         self.validate_attestation_policy()?;
         if self.hardened {
@@ -821,9 +860,10 @@ impl VaultConfig {
                         .into(),
                 ));
             }
-            if self.seed_peers.len() != 2 {
+            let isolated_future_roster = self.seed_peers.is_empty() && self.genesis_n.unwrap_or_default() >= 3;
+            if self.seed_peers.len() != 2 && !isolated_future_roster {
                 return Err(DomainError::AttestationRejected(
-                    "production requires exactly two remote VAULT_SEED_PEERS for the fixed 2-of-3 quorum".into(),
+                    "production requires exactly two remote VAULT_SEED_PEERS for the fixed 2-of-3 quorum, or an explicit VAULT_GENESIS_N >= 3 for isolated bootstrap".into(),
                 ));
             }
         }
@@ -862,6 +902,7 @@ impl VaultConfig {
         Ok(())
     }
 
+    /// Returns the configured tier for a peer, defaulting to domestic when absent.
     pub fn peer_tier(&self, peer_id: &str) -> VaultNodeTier {
         let claimed = self.peer_tiers.get(peer_id).copied().unwrap_or(VaultNodeTier::Domestic);
         if !claimed.is_tee() {
@@ -931,6 +972,7 @@ impl VaultConfig {
         }
     }
 
+    /// Returns the effective release timelock after applying lab scaling rules.
     pub fn effective_lab_timelock_scale(&self) -> u64 {
         if self.hardened {
             1
@@ -939,13 +981,16 @@ impl VaultConfig {
         }
     }
 
+    /// Reports whether lab-only HTTP endpoints are enabled for this configuration.
     pub fn lab_endpoints_enabled(&self) -> bool {
         !self.hardened
     }
 
+    /// Returns the effective token only when the selected authentication mode uses one.
     pub fn effective_vault_token(&self) -> Option<&str> {
         self.vault_token.as_deref().or(if matches!(self.ceremony_mode, CeremonyMode::Lab) && !self.hardened {
-            // Matches vault-mesh-lab.compose.yaml + kfe-service-vaultmesh-testnet3.properties.
+            // Compatibility fallback for isolated tests only. Production
+            // configuration rejects static-token authentication.
             // Lab-only (#33): shared static token is by design for visualize.
             Some("kerosene-vault-lab-only")
         } else {
@@ -965,6 +1010,7 @@ impl VaultConfig {
         }
     }
 
+    /// Resolves the configured data directory or its runtime default.
     pub fn effective_data_dir(&self) -> std::path::PathBuf {
         if let Some(dir) = self.data_dir.as_deref() {
             std::path::PathBuf::from(dir)
@@ -973,6 +1019,7 @@ impl VaultConfig {
         }
     }
 
+    /// Resolves the optional legacy shared anti-nonce directory setting.
     pub fn effective_anti_nonce_shared_dir(&self) -> Option<std::path::PathBuf> {
         self.anti_nonce_shared_dir.as_deref().map(std::path::PathBuf::from)
     }

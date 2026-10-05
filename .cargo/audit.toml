@@ -1,0 +1,4 @@
+[advisories]
+ignore = [
+    "RUSTSEC-2026-0258", # h2 0.3.27 pulled indirectly by optional sev-snp-utilities 2.600.0
+]

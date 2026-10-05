@@ -5,12 +5,13 @@
 # the same spiffe:// paths under ceremony-certs/spiffe/.
 #
 # Usage:
-#   ./scripts/gen_ceremony_mtls_certs.sh
+#   ./scripts/ceremony/gen_mtls_certs.sh
 #   VAULT_MTLS_NODE_IDS=vault-1,vault-2,vault-3 \
 #   VAULT_MTLS_TRUST_DOMAIN=kerosene.ceremony \
 #   VAULT_CEREMONY_MTLS_TTL_HOURS=24 \
-#     ./scripts/gen_ceremony_mtls_certs.sh
+#     ./scripts/ceremony/gen_mtls_certs.sh
 set -euo pipefail
+umask 077
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -51,7 +52,7 @@ for node_id in "${NODE_IDS[@]}"; do
   spiffe_id="spiffe://${TRUST_DOMAIN}/vault/${node_id}"
   mkdir -p "nodes/${node_id}"
   EXTRA_SAN="DNS:localhost,DNS:${node_id},DNS:vault-1,DNS:vault-2,DNS:vault-3,IP:127.0.0.1"
-  EXTRA_SAN="$(mtls_onion_extra_san "$EXTRA_SAN" "${VAULT_LAB_MTLS_ONION_SANS:-}")"
+  EXTRA_SAN="$(mtls_onion_extra_san "$EXTRA_SAN" "${VAULT_CEREMONY_MTLS_ONION_SANS:-${VAULT_LAB_MTLS_ONION_SANS:-}}")"
 
   # Server leaf (listen) + client leaf (outbound peer) share the same SPIFFE ID.
   (
@@ -129,7 +130,7 @@ cat <<EOF
   #   kfe.vaultmesh.tls.key-path=$OUT_DIR/vault-client.pkcs8.key
   #   kfe.vaultmesh.tls.ca-path=$OUT_DIR/ca.crt
   # Rotate leaves:
-  #   VAULT_CEREMONY_MTLS_TTL_HOURS=24 ./scripts/rotate_ceremony_mtls_certs.sh
+  #   VAULT_CEREMONY_MTLS_TTL_HOURS=24 ./scripts/ceremony/rotate_mtls_certs.sh
   # SPIFFE tree: $OUT_DIR/spiffe/
 Ceremony mTLS materials written to $OUT_DIR (testnet/ceremony Gate — not mainnet).
 EOF

@@ -1,20 +1,49 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
 # Generate X25519 key pairs for Tor HiddenServiceAuthorizeClient stealth.
 # Each authorized client gets a x25519 private key + .auth file.
-# Output to $OUTPUT_DIR (default: infra/runtime/tor/authorized_clients).
+# Output to $OUTPUT_DIR (default: var/tor-authorized-clients).
 #
 # Usage:
-#   ./scripts/vault/gen_tor_auth_clients.sh [--client-count N] [--output-dir DIR]
+#   ./scripts/ceremony/gen_tor_auth_clients.sh [--client-count N] [--output-dir DIR]
 #
 # After generation, copy .auth files to Tor HS authorized_clients/ directory.
 # Each operator keeps their private key secret.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-CLIENT_COUNT="${1:-3}"
-OUTPUT_DIR="${2:-$REPO_ROOT/infra/runtime/tor/authorized_clients}"
+CLIENT_COUNT=3
+OUTPUT_DIR="$REPO_ROOT/var/tor-authorized-clients"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --client-count)
+      [[ $# -ge 2 ]] || { echo "--client-count requires a value" >&2; exit 2; }
+      CLIENT_COUNT="$2"
+      shift 2
+      ;;
+    --output-dir)
+      [[ $# -ge 2 ]] || { echo "--output-dir requires a value" >&2; exit 2; }
+      OUTPUT_DIR="$2"
+      shift 2
+      ;;
+    -h|--help)
+      echo "Usage: $0 [--client-count N] [--output-dir DIR]"
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      exit 2
+      ;;
+  esac
+done
+
+[[ "$CLIENT_COUNT" =~ ^[1-9][0-9]*$ ]] || {
+  echo "--client-count must be a positive integer" >&2
+  exit 2
+}
 
 if ! command -v openssl >/dev/null 2>&1; then
   echo "[!] openssl required for X25519 key generation" >&2
