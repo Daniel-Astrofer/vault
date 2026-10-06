@@ -166,3 +166,44 @@ mtls_onion_extra_san() {
 mtls_default_node_ids() {
   echo "${VAULT_MTLS_NODE_IDS:-vault-1,vault-2,vault-3}"
 }
+
+# Operational node names are deliberately kept separate from cryptographic
+# membership identities. The former are used for certificate directories,
+# CNs, and DNS SANs; the latter are carried by the SPIFFE URI SAN and may be
+# full-length public-key hashes.
+mtls_validate_node_member_ids() {
+  local expected="$1"
+  local member_ids_csv="${VAULT_MTLS_NODE_MEMBER_IDS:-}"
+  local member_id
+  local -a member_ids
+
+  [[ -n "$member_ids_csv" ]] || return 0
+  IFS=',' read -r -a member_ids <<< "$member_ids_csv"
+  if [[ "${#member_ids[@]}" -ne "$expected" ]]; then
+    echo "error: VAULT_MTLS_NODE_MEMBER_IDS must contain exactly ${expected} entries" >&2
+    return 1
+  fi
+  for member_id in "${member_ids[@]}"; do
+    member_id="$(echo "$member_id" | tr -d '[:space:]')"
+    if [[ -z "$member_id" ]]; then
+      echo "error: VAULT_MTLS_NODE_MEMBER_IDS entries must not be empty" >&2
+      return 1
+    fi
+  done
+}
+
+mtls_node_member_id() {
+  local index="$1"
+  local operational_id="$2"
+  local member_ids_csv="${VAULT_MTLS_NODE_MEMBER_IDS:-}"
+  local member_id
+  local -a member_ids
+
+  if [[ -z "$member_ids_csv" ]]; then
+    echo "$operational_id"
+    return
+  fi
+  IFS=',' read -r -a member_ids <<< "$member_ids_csv"
+  member_id="${member_ids[$index]}"
+  echo "$member_id" | tr -d '[:space:]'
+}

@@ -7,6 +7,7 @@
 # Usage:
 #   ./scripts/ceremony/gen_mtls_certs.sh
 #   VAULT_MTLS_NODE_IDS=vault-1,vault-2,vault-3 \
+#   VAULT_MTLS_NODE_MEMBER_IDS=<member-hash-1>,<member-hash-2>,<member-hash-3> \
 #   VAULT_MTLS_TRUST_DOMAIN=kerosene.ceremony \
 #   VAULT_CEREMONY_MTLS_TTL_HOURS=24 \
 #     ./scripts/ceremony/gen_mtls_certs.sh
@@ -27,6 +28,8 @@ P12_PASS="${VAULT_LAB_MTLS_P12_PASSWORD:-changeit}"
 SPIFFE_KFE="${VAULT_MTLS_SPIFFE_KFE:-spiffe://${TRUST_DOMAIN}/kfe}"
 ORG="Kerosene Ceremony"
 NODE_IDS_CSV="$(mtls_default_node_ids)"
+IFS=',' read -r -a NODE_IDS <<< "${NODE_IDS_CSV}"
+mtls_validate_node_member_ids "${#NODE_IDS[@]}"
 
 # OpenSSL -days is day-granularity; ceil hours → days (min 1).
 DAYS=$(( (TTL_HOURS + 23) / 24 ))
@@ -42,14 +45,15 @@ openssl genrsa -out ca.key 4096
 openssl req -x509 -new -nodes -key ca.key -sha256 -days "$CA_DAYS" -out ca.crt \
   -subj "/C=CH/ST=Zurich/L=Zurich/O=${ORG}/OU=Vault Mesh Ceremony/CN=Kerosene Ceremony Vault CA"
 
-IFS=',' read -r -a NODE_IDS <<< "${NODE_IDS_CSV}"
 SPIFFE_PAIRS=()
 
 echo "[2/5] Unique vault leaves (TTL≈${TTL_HOURS}h, openssl days=${DAYS})"
-for node_id in "${NODE_IDS[@]}"; do
+for node_index in "${!NODE_IDS[@]}"; do
+  node_id="${NODE_IDS[$node_index]}"
   node_id="$(echo "$node_id" | tr -d '[:space:]')"
   [[ -n "$node_id" ]] || continue
-  spiffe_id="spiffe://${TRUST_DOMAIN}/vault/${node_id}"
+  member_id="$(mtls_node_member_id "$node_index" "$node_id")"
+  spiffe_id="spiffe://${TRUST_DOMAIN}/vault/${member_id}"
   mkdir -p "nodes/${node_id}"
   EXTRA_SAN="DNS:localhost,DNS:${node_id},DNS:vault-1,DNS:vault-2,DNS:vault-3,IP:127.0.0.1"
   EXTRA_SAN="$(mtls_onion_extra_san "$EXTRA_SAN" "${VAULT_LAB_MTLS_ONION_SANS:-}")"

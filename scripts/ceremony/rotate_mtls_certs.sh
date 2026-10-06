@@ -43,13 +43,16 @@ cp -f "$OUT_DIR/ca.crt" "$OUT_DIR/ca.key" "$STAGING/"
 cd "$STAGING"
 
 IFS=',' read -r -a NODE_IDS <<< "${NODE_IDS_CSV}"
+mtls_validate_node_member_ids "${#NODE_IDS[@]}"
 SPIFFE_PAIRS=()
 
 echo "[rotate] ceremony leaves TTL≈${TTL_HOURS}h → $OUT_DIR"
-for node_id in "${NODE_IDS[@]}"; do
+for node_index in "${!NODE_IDS[@]}"; do
+  node_id="${NODE_IDS[$node_index]}"
   node_id="$(echo "$node_id" | tr -d '[:space:]')"
   [[ -n "$node_id" ]] || continue
-  spiffe_id="spiffe://${TRUST_DOMAIN}/vault/${node_id}"
+  member_id="$(mtls_node_member_id "$node_index" "$node_id")"
+  spiffe_id="spiffe://${TRUST_DOMAIN}/vault/${member_id}"
   mkdir -p "nodes/${node_id}"
   EXTRA_SAN="DNS:localhost,DNS:${node_id},DNS:vault-1,DNS:vault-2,DNS:vault-3,IP:127.0.0.1"
   EXTRA_SAN="$(mtls_onion_extra_san "$EXTRA_SAN" "${VAULT_LAB_MTLS_ONION_SANS:-}")"

@@ -34,6 +34,10 @@ name = "hybrid_envelope_kat"
 path = "tests/contract/hybrid_envelope_kat.rs"
 
 [[test]]
+name = "mtls_cert_scripts"
+path = "tests/contract/mtls_cert_scripts.rs"
+
+[[test]]
 name = "application_health"
 path = "tests/application/application_health.rs"
 
