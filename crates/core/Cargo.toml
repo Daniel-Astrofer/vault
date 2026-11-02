@@ -16,11 +16,11 @@ tee_hw = ["vault-bootstrap/tee_hw", "vault-api/tee_hw"]
 tpm = ["vault-bootstrap/tpm", "vault-api/tpm"]
 
 [lib]
-path = "src/lib.rs"
+path = "lib.rs"
 
 [dependencies]
-vault-adapters = { path = "../vault-adapters", default-features = false }
-vault-api = { path = "../vault-api", default-features = false }
-vault-application = { path = "../vault-application" }
-vault-bootstrap = { path = "../vault-bootstrap", default-features = false }
-vault-domain = { path = "../vault-domain" }
+vault-adapters = { path = "../adapters", default-features = false }
+vault-api = { path = "../api", default-features = false }
+vault-application = { path = "../application" }
+vault-bootstrap = { path = "../bootstrap", default-features = false }
+vault-domain = { path = "../domain" }

@@ -21,4 +21,4 @@ tpm = ["vault-core/tpm"]
 [dependencies]
 axum-server = { version = "0.8", features = ["tls-rustls"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
-vault-core = { path = "../../crates/vault-core" }
+vault-core = { path = "../../crates/core" }

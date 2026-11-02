@@ -8,7 +8,7 @@ use crate::application::ports::PeerDirectoryPort;
 use crate::application::OnlineStatusPort;
 use crate::domain::DomainError;
 
-/// Honest online count for fail-stop: self + peers that answer `/v1/health`.
+/// Honest online count for fail-stop: self + peers that answer the configured liveness endpoint.
 ///
 /// Unreachable / unknown peers are **not** counted (fail-closed). Does not
 /// invent liveness from `VAULT_ONLINE_COUNT` alone when peers are configured.
@@ -72,14 +72,19 @@ impl ProbedOnlineCount {
         }
     }
 
+    fn probe_timeout(&self) -> Duration {
+        // Onion circuits often need more than five seconds. Honor the configured
+        // connection budget, bounded by the total request budget and a health cap.
+        let cap = if self.peer_http.transport.is_tor() { Duration::from_secs(15) } else { Duration::from_millis(500) };
+        self.peer_http.connect_timeout.min(self.peer_http.timeout).min(cap)
+    }
+
     fn probe_url(&self, url: &str) -> bool {
         let mut builder = match self.peer_http.apply_blocking_builder(reqwest::blocking::Client::builder()) {
             Ok(b) => b,
             Err(_) => return false,
         };
-        let timeout_cap_ms = if self.peer_http.transport.is_tor() { 5_000 } else { 500 };
-        builder = builder
-            .timeout(Duration::from_millis(self.peer_http.connect_timeout.as_millis().min(timeout_cap_ms) as u64));
+        builder = builder.timeout(self.probe_timeout());
         if let Some(tls) = self.tls.clone() {
             builder = builder.use_preconfigured_tls(tls);
         }
@@ -149,6 +154,80 @@ impl OnlineStatusPort for ProbedOnlineCount {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tor_probe_honors_connection_budget_up_to_fifteen_seconds() {
+        let mut settings = PeerHttpSettings::tor_defaults();
+        settings.connect_timeout = Duration::from_secs(12);
+        let mut probe = ProbedOnlineCount::new(
+            Arc::new(crate::adapters::InMemoryPeerDirectory::new()),
+            vec![],
+            settings,
+            None,
+            None,
+        );
+        assert_eq!(probe.probe_timeout(), Duration::from_secs(12));
+        probe.peer_http.connect_timeout = Duration::from_secs(60);
+        assert_eq!(probe.probe_timeout(), Duration::from_secs(15));
+        probe.peer_http.timeout = Duration::from_secs(3);
+        assert_eq!(probe.probe_timeout(), Duration::from_secs(3));
+    }
+
+    #[test]
+    fn clearnet_probe_retains_short_health_budget() {
+        let probe = ProbedOnlineCount::new(
+            Arc::new(crate::adapters::InMemoryPeerDirectory::new()),
+            vec![],
+            PeerHttpSettings::clearnet_defaults(),
+            None,
+            None,
+        );
+        assert_eq!(probe.probe_timeout(), Duration::from_millis(500));
+    }
+
+    #[test]
+    fn tor_probe_accepts_response_after_old_five_second_limit() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            let mut request = [0u8; 2048];
+            assert!(stream.read(&mut request).unwrap() > 0);
+            std::thread::sleep(Duration::from_millis(5_200));
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+        });
+        let mut settings = PeerHttpSettings::tor_defaults();
+        // A local HTTP harness isolates timeout behavior from external Tor/TLS.
+        settings.socks_proxy = None;
+        settings.connect_timeout = Duration::from_secs(8);
+        settings.timeout = Duration::from_secs(8);
+        let probe = ProbedOnlineCount::new(
+            Arc::new(crate::adapters::InMemoryPeerDirectory::new()),
+            vec![format!("http://{address}/v1/live")],
+            settings,
+            None,
+            None,
+        );
+        assert_eq!(probe.online_count(), 2);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn unreachable_configured_peer_does_not_count_online() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        let probe = ProbedOnlineCount::new(
+            Arc::new(crate::adapters::InMemoryPeerDirectory::new()),
+            vec![format!("http://{address}/v1/live")],
+            PeerHttpSettings::clearnet_defaults(),
+            None,
+            None,
+        );
+        assert_eq!(probe.online_count(), 1);
+    }
 
     #[test]
     fn lab_static_reports_fixed() {

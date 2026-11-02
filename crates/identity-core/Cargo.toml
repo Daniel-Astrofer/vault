@@ -7,7 +7,7 @@ license = "UNLICENSED"
 publish = false
 
 [lib]
-path = "src/lib.rs"
+path = "lib.rs"
 
 [dependencies]
 ed25519-dalek = { version = "2", features = ["rand_core"] }

@@ -183,9 +183,13 @@ async fn v1_live() -> impl IntoResponse {
 }
 
 async fn v1_health(State(state): State<AppState>) -> impl IntoResponse {
-    match state.runtime.get_health.execute() {
-        Ok(h) => (StatusCode::OK, h.to_public_json()),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, json_err(e)),
+    // Peer probes use blocking HTTP. Keep the async worker available to answer
+    // other members' local-only /v1/live probes during concurrent health checks.
+    let runtime = state.runtime.clone();
+    match tokio::task::spawn_blocking(move || runtime.get_health.execute()).await {
+        Ok(Ok(h)) => (StatusCode::OK, h.to_public_json()),
+        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, json_err(e)),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, json_err("health worker failed")),
     }
 }
 

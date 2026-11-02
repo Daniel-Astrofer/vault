@@ -8,14 +8,14 @@ publish = false
 
 [[bin]]
 name = "vault-signer"
-path = "src/main.rs"
+path = "main.rs"
 
 [lib]
-path = "src/lib.rs"
+path = "lib.rs"
 
 [dependencies]
 # Local crate deps
-vault-identity-core = { path = "../vault-identity-core" }
+vault-identity-core = { path = "../identity-core" }
 
 # FROST signing
 frost-secp256k1 = { version = "3", features = ["serde"] }
