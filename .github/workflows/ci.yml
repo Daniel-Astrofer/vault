@@ -9,6 +9,11 @@ permissions:
   contents: read
 
 jobs:
+  compatibility:
+    uses: Daniel-Astrofer/.github/.github/workflows/compatibility-ci.yml@54dd4ccdcc6b0c21ab992bf72b900fe460a04867
+    with:
+      component: vault
+
   rust:
     uses: Daniel-Astrofer/.github/.github/workflows/rust-ci.yml@2552ff2125c2d72accebe93804b8e139a52ded13
     with:
