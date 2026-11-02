@@ -3,7 +3,7 @@
 #
 # Usage:
 #   ./scripts/ceremony/gen_mtls_certs.sh          # once (creates CA + leaves)
-#   VAULT_CEREMONY_MTLS_TTL_HOURS=24 ./scripts/ceremony/rotate_mtls_certs.sh
+#   VAULT_CEREMONY_MTLS_TTL_HOURS=48 ./scripts/ceremony/rotate_mtls_certs.sh
 #
 # Optional reload hook:
 #   VAULT_MTLS_ROTATE_HOOK=/path/to/hook.sh ./scripts/ceremony/rotate_mtls_certs.sh
@@ -17,7 +17,7 @@ VAULT_ROOT="$REPO_ROOT"
 source "$SCRIPT_DIR/../lib/mtls_cert_lib.sh"
 
 OUT_DIR="${VAULT_CEREMONY_MTLS_OUT:-${VAULT_LAB_MTLS_OUT:-$VAULT_ROOT/var/ceremony-certs}}"
-TTL_HOURS="${VAULT_CEREMONY_MTLS_TTL_HOURS:-${VAULT_LAB_MTLS_TTL_HOURS:-24}}"
+TTL_HOURS="${VAULT_CEREMONY_MTLS_TTL_HOURS:-${VAULT_LAB_MTLS_TTL_HOURS:-48}}"
 TRUST_DOMAIN="${VAULT_MTLS_TRUST_DOMAIN:-kerosene.ceremony}"
 P12_PASS="${VAULT_LAB_MTLS_P12_PASSWORD:-changeit}"
 SPIFFE_KFE="${VAULT_MTLS_SPIFFE_KFE:-spiffe://${TRUST_DOMAIN}/kfe}"
