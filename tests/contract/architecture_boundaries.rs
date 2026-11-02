@@ -26,7 +26,7 @@ fn rust_sources(root: impl AsRef<Path>) -> Vec<std::path::PathBuf> {
 
 #[test]
 fn domain_has_no_runtime_or_bitcoin_dependency() {
-    let manifest = read("crates/vault-domain/Cargo.toml");
+    let manifest = read("crates/domain/Cargo.toml");
     for forbidden in ["axum", "tokio", "reqwest", "rustls", "bitcoin", "frost", "tracing", "log ="] {
         assert!(
             !manifest.contains(forbidden),
@@ -52,7 +52,7 @@ fn domain_source_is_technology_free() {
         "tracing::",
         "log::",
     ];
-    for path in rust_sources("crates/vault-domain/src") {
+    for path in rust_sources("crates/domain") {
         let source = read(&path);
         for import in forbidden {
             assert!(!source.contains(import), "{} imports {import}", path.display());
@@ -62,10 +62,10 @@ fn domain_source_is_technology_free() {
 
 #[test]
 fn application_does_not_depend_on_core_adapters_or_bootstrap() {
-    let manifest = read("crates/vault-application/Cargo.toml");
+    let manifest = read("crates/application/Cargo.toml");
     assert!(!manifest.contains("vault-core"));
     let forbidden = ["crate::adapters", "crate::bootstrap", "vault_core::", "axum::", "tokio::", "reqwest::"];
-    for path in rust_sources("crates/vault-application/src") {
+    for path in rust_sources("crates/application") {
         let source = read(&path);
         for import in forbidden {
             assert!(!source.contains(import), "{} imports {import}", path.display());
@@ -76,21 +76,21 @@ fn application_does_not_depend_on_core_adapters_or_bootstrap() {
 #[test]
 fn clean_architecture_directories_are_present() {
     for directory in [
-        "crates/vault-domain/src/identity",
-        "crates/vault-domain/src/signing",
-        "crates/vault-application/src/use_cases",
-        "crates/vault-application/src/ports",
-        "crates/vault-adapters/src/attestation/tee",
-        "crates/vault-adapters/src/frost",
-        "crates/vault-adapters/src/storage",
-        "crates/vault-api/src/routes",
-        "crates/vault-bootstrap/src/runtime",
-        "crates/vault-identity-core/src/identity",
-        "crates/vault-identityd/src/daemon",
-        "crates/vault-signer/src/protocol",
-        "crates/vault-signer/src/signing",
-        "crates/vault-signer/src/session",
-        "crates/vault-signer/src/transport",
+        "crates/domain/identity",
+        "crates/domain/signing",
+        "crates/application/use_cases",
+        "crates/application/ports",
+        "crates/adapters/attestation/tee",
+        "crates/adapters/frost",
+        "crates/adapters/storage",
+        "crates/api/routes",
+        "crates/bootstrap/runtime",
+        "crates/identity-core/identity",
+        "crates/identityd/daemon",
+        "crates/signer/protocol",
+        "crates/signer/signing",
+        "crates/signer/session",
+        "crates/signer/transport",
     ] {
         assert!(Path::new(directory).is_dir(), "missing architectural directory: {directory}");
     }

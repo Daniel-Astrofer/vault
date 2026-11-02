@@ -1,6 +1,6 @@
 //! Thin binary wrapper — delegates all logic to `vault_core`.
 //!
-//! The full vault implementation now lives in `crates/vault-core/`.
+//! The full vault implementation now lives in `crates/core/`.
 //! This entry point calls `vault_core::bootstrap::VaultRuntime::build()`
 //! and starts the Axum HTTP server.
 

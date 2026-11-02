@@ -12,6 +12,9 @@ hybrid = []
 tee_hw = ["dep:sev-snp-utilities"]
 tpm = []
 
+[lib]
+path = "lib.rs"
+
 [dependencies]
 aes-gcm = "0.10"
 aead = "0.5"
@@ -48,9 +51,9 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal
 tokio-rustls = "0.26"
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "limit"] }
-vault-application = { path = "../vault-application" }
-vault-domain = { path = "../vault-domain" }
-vault-identity-core = { path = "../vault-identity-core" }
+vault-application = { path = "../application" }
+vault-domain = { path = "../domain" }
+vault-identity-core = { path = "../identity-core" }
 x25519-dalek = "2"
 x509-parser = "0.16"
 zeroize = "1"
