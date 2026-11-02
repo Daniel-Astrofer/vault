@@ -233,10 +233,10 @@ mod tests {
 
     #[test]
     fn onion_detection() {
-        assert!(peer_addr_is_onion("http://abc.onion:7701"));
+        assert!(peer_addr_is_onion("http://abc.onion:7801"));
         assert!(peer_addr_is_onion("xyz.onion"));
-        assert!(!peer_addr_is_onion("vault-2:7701"));
-        assert!(!peer_addr_is_onion("http://127.0.0.1:7701"));
+        assert!(!peer_addr_is_onion("vault-2:7801"));
+        assert!(!peer_addr_is_onion("http://127.0.0.1:7801"));
     }
 
     #[test]

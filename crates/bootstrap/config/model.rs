@@ -312,7 +312,7 @@ impl VaultConfig {
         let attestation_mode = AttestationMode::parse(&mode_raw)
             .ok_or_else(|| DomainError::AttestationRejected(format!("unknown ATTESTATION_MODE={mode_raw}")))?;
 
-        let listen_default = "127.0.0.1:7701";
+        let listen_default = "127.0.0.1:7801";
         let listen_addr = std::env::var("VAULT_LISTEN_ADDR").unwrap_or_else(|_| listen_default.into());
         if std::env::var_os("LAB_ATTESTATION_ROOT").is_some() {
             return Err(DomainError::LabFlagForbidden(
@@ -1261,8 +1261,8 @@ mod tests {
             TlsPeerVerifyPolicy::OnionOrSpiffe { allowed: vec!["spiffe://kerosene.lab/vault/server".into()] };
         cfg.audit_key_allowlist = MeshAuditKeyAllowlist::from_hex_list(["aa".repeat(32)]);
         cfg.seed_peers = vec![
-            ("vault-2".into(), "http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.onion:7701".into()),
-            ("vault-3".into(), "http://bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.onion:7701".into()),
+            ("vault-2".into(), "http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.onion:7801".into()),
+            ("vault-3".into(), "http://bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.onion:7801".into()),
         ];
         cfg.genesis_n = Some(3);
         cfg
@@ -1493,7 +1493,7 @@ mod tests {
         cfg.dkg_mode = DkgMode::DistributedWire;
         cfg.transport = VaultTransport::Clearnet;
         cfg.peer_http = PeerHttpSettings::clearnet_defaults();
-        cfg.seed_peers = vec![("vault-2".into(), "vault-2:7701".into())];
+        cfg.seed_peers = vec![("vault-2".into(), "vault-2:7801".into())];
         cfg.measurement_pin_hex = Some("cc".repeat(32));
         assert!(matches!(cfg.validate_hygiene(), Err(DomainError::LabFlagForbidden(_))));
     }
@@ -1522,7 +1522,7 @@ mod tests {
         let mut cfg = base();
         cfg.transport = VaultTransport::Tor;
         cfg.peer_http = PeerHttpSettings::tor_defaults();
-        cfg.seed_peers = vec![("vault-2".into(), "vault-2:7701".into())];
+        cfg.seed_peers = vec![("vault-2".into(), "vault-2:7801".into())];
         assert!(matches!(cfg.validate_transport_hygiene(), Err(DomainError::AttestationRejected(_))));
     }
 
@@ -1548,7 +1548,7 @@ mod tests {
         let mut cfg = base();
         cfg.node_id = NodeId::new("vault-home").unwrap();
         cfg.node_tier = VaultNodeTier::Domestic;
-        cfg.seed_peers = vec![("vault-epyc".into(), "epyc:7701".into()), ("vault-home-2".into(), "h2:7701".into())];
+        cfg.seed_peers = vec![("vault-epyc".into(), "epyc:7801".into()), ("vault-home-2".into(), "h2:7801".into())];
         cfg.peer_tiers.insert("vault-epyc".into(), VaultNodeTier::Sev);
         cfg.genesis_n = Some(2);
         let seats = cfg.seat_genesis().unwrap();

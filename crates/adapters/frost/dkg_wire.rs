@@ -936,9 +936,9 @@ mod tests {
 
     #[test]
     fn peer_base_url_forces_https_for_mtls() {
-        assert_eq!(peer_base_url("vault-2:7701", true), "https://vault-2:7701");
-        assert_eq!(peer_base_url("http://vault-2:7701", true), "https://vault-2:7701");
-        assert_eq!(peer_base_url("vault-2:7701", false), "http://vault-2:7701");
+        assert_eq!(peer_base_url("vault-2:7801", true), "https://vault-2:7801");
+        assert_eq!(peer_base_url("http://vault-2:7801", true), "https://vault-2:7801");
+        assert_eq!(peer_base_url("vault-2:7801", false), "http://vault-2:7801");
     }
 
     #[test]

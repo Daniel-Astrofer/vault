@@ -144,7 +144,7 @@ case "$MODE" in
     echo "Manual ceremony steps:"
     echo "  1. Bring N vaults with identical constitution seed / peer set on **private Tor mesh**"
     echo "     - VAULT_TRANSPORT=tor VAULT_SOCKS_PROXY=socks5h://127.0.0.1:9050"
-    echo "     - VAULT_SEED_PEERS=id=https://….onion:7701 (no clearnet publish)"
+    echo "     - VAULT_SEED_PEERS=id=https://….onion:7801 (no clearnet publish)"
     echo "     - VAULT_AUTH_MODE=mtls + VAULT_TLS_* + VAULT_TLS_VERIFY_MODE=onion_or_spiffe"
     echo "     - VAULT_TLS_PEER_SPIFFE_ID=spiffe://…/vault/vault-1,spiffe://…/vault/vault-2,… (unique; gen_ceremony_mtls_certs.sh)"
     echo "     - Audit keys: ./scripts/ceremony/gen_audit_keys.sh + source audit/env.hint (F8; ≠ release ≠ settlement)"

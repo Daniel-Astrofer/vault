@@ -34,9 +34,9 @@ MAX="${VAULT_DKG_MAX:-}"
 MIN="${VAULT_DKG_MIN:-}"
 
 BASES=(
-  "${VAULT1_URL:-https://127.0.0.1:7701}"
-  "${VAULT2_URL:-https://127.0.0.1:7702}"
-  "${VAULT3_URL:-https://127.0.0.1:7703}"
+  "${VAULT1_URL:-https://127.0.0.1:7801}"
+  "${VAULT2_URL:-https://127.0.0.1:7802}"
+  "${VAULT3_URL:-https://127.0.0.1:7803}"
 )
 
 CURL_AUTH=()
