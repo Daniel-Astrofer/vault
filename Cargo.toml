@@ -3,7 +3,7 @@ resolver = "2"
 members = ["apps/*", "crates/*"]
 
 [workspace.dependencies]
-kerosene-contracts = { git = "https://github.com/Daniel-Astrofer/kerosene-contracts.git", rev = "5ab7bc130f71b9316ec5ff4adb7b98d3d9e4fc20" }
+kerosene-contracts = { git = "https://github.com/Daniel-Astrofer/contracts.git", rev = "ce2f3d6d623baa4acea1faa27a78fb60ceac822f", version = "=0.3.0" }
 
 [package]
 name = "kerosene-vault"

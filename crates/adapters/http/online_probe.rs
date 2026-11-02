@@ -107,7 +107,7 @@ impl ProbedOnlineCount {
         if trimmed.is_empty() || trimmed.contains(".onion") {
             return false;
         }
-        let candidate = if trimmed.contains(':') { trimmed.to_string() } else { format!("{trimmed}:7701") };
+        let candidate = if trimmed.contains(':') { trimmed.to_string() } else { format!("{trimmed}:7801") };
         let Ok(mut iter) = candidate.to_socket_addrs() else {
             return false;
         };

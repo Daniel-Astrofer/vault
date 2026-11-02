@@ -20,7 +20,7 @@
 # mTLS lab:
 #   VAULT_AUTH_MODE=mtls \
 #   VAULT_TLS_CA=./var/lab-certs/ca.crt \
-#   VAULT1_URL=https://127.0.0.1:7701 VAULT2_URL=https://127.0.0.1:7702 VAULT3_URL=https://127.0.0.1:7703 \
+#   VAULT1_URL=https://127.0.0.1:7801 VAULT2_URL=https://127.0.0.1:7802 VAULT3_URL=https://127.0.0.1:7803 \
 #   ./scripts/lab/dkg_tr_wire.sh
 set -euo pipefail
 
@@ -33,9 +33,9 @@ MIN=2
 
 NODE_IDS=(vault-1 vault-2 vault-3)
 BASES=(
-  "${VAULT1_URL:-http://127.0.0.1:7701}"
-  "${VAULT2_URL:-http://127.0.0.1:7702}"
-  "${VAULT3_URL:-http://127.0.0.1:7703}"
+  "${VAULT1_URL:-http://127.0.0.1:7801}"
+  "${VAULT2_URL:-http://127.0.0.1:7802}"
+  "${VAULT3_URL:-http://127.0.0.1:7803}"
 )
 
 # Resolve per-node vault peer client cert/key (mTLS only).

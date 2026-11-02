@@ -14,7 +14,7 @@
 #   VAULT_TLS_CLIENT_CERT=./var/lab-certs/vault-client.crt \
 #   VAULT_TLS_CLIENT_KEY=./var/lab-certs/vault-client.key \
 #   VAULT_TLS_CA=./var/lab-certs/ca.crt \
-#   VAULT1_URL=https://127.0.0.1:7701 VAULT2_URL=https://127.0.0.1:7702 VAULT3_URL=https://127.0.0.1:7703 \
+#   VAULT1_URL=https://127.0.0.1:7801 VAULT2_URL=https://127.0.0.1:7802 VAULT3_URL=https://127.0.0.1:7803 \
 #   ./scripts/lab/dkg_wire.sh
 #
 # In-process fallback (no compose peers): VAULT_DKG_MODE=distributed inside one process.
@@ -28,9 +28,9 @@ MAX=3
 MIN=2
 
 BASES=(
-  "${VAULT1_URL:-http://127.0.0.1:7701}"
-  "${VAULT2_URL:-http://127.0.0.1:7702}"
-  "${VAULT3_URL:-http://127.0.0.1:7703}"
+  "${VAULT1_URL:-http://127.0.0.1:7801}"
+  "${VAULT2_URL:-http://127.0.0.1:7802}"
+  "${VAULT3_URL:-http://127.0.0.1:7803}"
 )
 
 CURL_AUTH=()

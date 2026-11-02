@@ -10,7 +10,7 @@ fn health_ready_when_peers_present() {
     peers
         .upsert_sync(PeerInfo {
             id: NodeId::new("vault-2").unwrap(),
-            endpoint: PeerEndpoint { address: "vault-2:7701".into() },
+            endpoint: PeerEndpoint { address: "vault-2:7801".into() },
         })
         .unwrap();
     let attestation = Arc::new(SimAttestationAdapter::new(b"lab"));
@@ -87,7 +87,7 @@ fn ping_peer_verifies_sim_quote() {
     let peers = Arc::new(InMemoryPeerDirectory::new());
     let peer_id = NodeId::new("vault-2").unwrap();
     peers
-        .upsert_sync(PeerInfo { id: peer_id.clone(), endpoint: PeerEndpoint { address: "vault-2:7701".into() } })
+        .upsert_sync(PeerInfo { id: peer_id.clone(), endpoint: PeerEndpoint { address: "vault-2:7801".into() } })
         .unwrap();
     let attestation = Arc::new(SimAttestationAdapter::new(b"lab"));
     let clock = Arc::new(SystemClock);

@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   compatibility:
-    uses: Daniel-Astrofer/.github/.github/workflows/compatibility-ci.yml@54dd4ccdcc6b0c21ab992bf72b900fe460a04867
+    uses: Daniel-Astrofer/.github/.github/workflows/compatibility-ci.yml@516bc5cd5f0b748e61d3944cfa126fbf3315ed7d
     with:
       component: vault
 
