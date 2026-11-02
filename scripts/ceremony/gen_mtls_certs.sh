@@ -8,7 +8,7 @@
 #   ./scripts/ceremony/gen_mtls_certs.sh
 #   VAULT_MTLS_NODE_IDS=vault-1,vault-2,vault-3 \
 #   VAULT_MTLS_TRUST_DOMAIN=kerosene.ceremony \
-#   VAULT_CEREMONY_MTLS_TTL_HOURS=24 \
+#   VAULT_CEREMONY_MTLS_TTL_HOURS=48 \
 #     ./scripts/ceremony/gen_mtls_certs.sh
 set -euo pipefail
 umask 077
@@ -20,7 +20,7 @@ VAULT_ROOT="$REPO_ROOT"
 source "$SCRIPT_DIR/../lib/mtls_cert_lib.sh"
 
 OUT_DIR="${VAULT_CEREMONY_MTLS_OUT:-${VAULT_LAB_MTLS_OUT:-$VAULT_ROOT/var/ceremony-certs}}"
-TTL_HOURS="${VAULT_CEREMONY_MTLS_TTL_HOURS:-${VAULT_LAB_MTLS_TTL_HOURS:-24}}"
+TTL_HOURS="${VAULT_CEREMONY_MTLS_TTL_HOURS:-${VAULT_LAB_MTLS_TTL_HOURS:-48}}"
 CA_DAYS="${VAULT_CEREMONY_MTLS_CA_DAYS:-825}"
 TRUST_DOMAIN="${VAULT_MTLS_TRUST_DOMAIN:-kerosene.ceremony}"
 P12_PASS="${VAULT_LAB_MTLS_P12_PASSWORD:-changeit}"
@@ -130,7 +130,7 @@ cat <<EOF
   #   kfe.vaultmesh.tls.key-path=$OUT_DIR/vault-client.pkcs8.key
   #   kfe.vaultmesh.tls.ca-path=$OUT_DIR/ca.crt
   # Rotate leaves:
-  #   VAULT_CEREMONY_MTLS_TTL_HOURS=24 ./scripts/ceremony/rotate_mtls_certs.sh
+  #   VAULT_CEREMONY_MTLS_TTL_HOURS=48 ./scripts/ceremony/rotate_mtls_certs.sh
   # SPIFFE tree: $OUT_DIR/spiffe/
 Ceremony mTLS materials written to $OUT_DIR (testnet/ceremony Gate — not mainnet).
 EOF
